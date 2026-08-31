@@ -1,0 +1,18 @@
+# EdgeDash dependencies
+# Standard library is preferred; these are added only where the value is clear.
+
+# HTTP requests — used exclusively in edgedash/sources/http.py
+# Provides connection pooling, timeout support, and session reuse that
+# urllib does not offer without significant boilerplate.
+requests==2.32.3
+
+# YAML config parsing — used exclusively in edgedash/config.py
+# Hand-parsing YAML is brittle; PyYAML saves real work.
+PyYAML==6.0.2
+
+# Google Gemini API — used exclusively in edgedash/llm.py
+# New SDK replacing deprecated google-generativeai package.
+google-genai==1.24.0
+
+# Streamlit Dashboard (read-only)
+streamlit==1.40.0
