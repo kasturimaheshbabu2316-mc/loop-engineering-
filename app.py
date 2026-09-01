@@ -1,6 +1,6 @@
 """EdgeDash Career Intelligence Dashboard.
 
-A premium, modern LinkedIn-inspired professional dashboard for career intelligence,
+A premium, modern professional dashboard for career intelligence,
 job match evaluation, skill gap analytics, and continuous verification telemetry.
 Strictly read-only data operations with interactive user profile customization.
 """
@@ -23,7 +23,7 @@ load_env()
 # Page Configuration & Global Branding
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="EdgeDash | LinkedIn Career Intelligence",
+    page_title="EdgeDash | Career Intelligence Platform",
     page_icon="💼",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -38,7 +38,7 @@ config = get_config()
 db_path = config.db_path
 
 # ---------------------------------------------------------------------------
-# LinkedIn-Inspired CSS Design System
+# Professional Modern CSS Design System
 # ---------------------------------------------------------------------------
 st.markdown(
     """
@@ -61,7 +61,7 @@ st.markdown(
     }
 
     /* Top Navigation Banner */
-    .linkedin-navbar {
+    .navbar-container {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -72,24 +72,25 @@ st.markdown(
         margin-bottom: 18px;
         box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
     }
-    .linkedin-logo {
+    .brand-logo {
         display: flex;
         align-items: center;
         gap: 12px;
     }
-    .logo-badge {
-        background: #0a66c2;
+    .brand-badge {
+        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
         color: #ffffff;
         font-family: 'Outfit', sans-serif;
         font-weight: 800;
-        font-size: 1.25em;
+        font-size: 1.15em;
         width: 38px;
         height: 38px;
-        border-radius: 8px;
+        border-radius: 10px;
         display: flex;
         align-items: center;
         justify-content: center;
-        box-shadow: 0 2px 10px rgba(10, 102, 194, 0.4);
+        box-shadow: 0 2px 10px rgba(37, 99, 235, 0.4);
+        border: 1px solid rgba(255, 255, 255, 0.1);
     }
     .navbar-title {
         font-size: 1.2em;
@@ -104,7 +105,7 @@ st.markdown(
         margin: 0;
     }
 
-    /* Profile / Candidate Banner Card */
+    /* Candidate Profile Banner Card */
     .candidate-card {
         background: #111827;
         border: 1px solid #1f2937;
@@ -125,7 +126,7 @@ st.markdown(
         left: 0;
         width: 100%;
         height: 4px;
-        background: linear-gradient(90deg, #0a66c2 0%, #38bdf8 50%, #10b981 100%);
+        background: linear-gradient(90deg, #2563eb 0%, #38bdf8 50%, #10b981 100%);
     }
     .candidate-info {
         display: flex;
@@ -136,7 +137,7 @@ st.markdown(
         width: 54px;
         height: 54px;
         border-radius: 50%;
-        background: linear-gradient(135deg, #0a66c2 0%, #0284c7 100%);
+        background: linear-gradient(135deg, #2563eb 0%, #0284c7 100%);
         color: #ffffff;
         font-weight: 800;
         font-size: 1.25em;
@@ -144,7 +145,7 @@ st.markdown(
         align-items: center;
         justify-content: center;
         border: 2px solid #38bdf8;
-        box-shadow: 0 4px 12px rgba(10, 102, 194, 0.35);
+        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
         flex-shrink: 0;
     }
 
@@ -159,8 +160,8 @@ st.markdown(
     }
     div[data-testid="metric-container"]:hover {
         transform: translateY(-2px);
-        border-color: #0a66c2;
-        box-shadow: 0 12px 24px -6px rgba(10, 102, 194, 0.25);
+        border-color: #2563eb;
+        box-shadow: 0 12px 24px -6px rgba(37, 99, 235, 0.25);
     }
     div[data-testid="stMetricLabel"] {
         color: #94a3b8 !important;
@@ -195,12 +196,12 @@ st.markdown(
         transition: all 0.2s ease !important;
     }
     button[data-baseweb="tab"][aria-selected="true"] {
-        background-color: #0a66c2 !important;
+        background-color: #2563eb !important;
         color: #ffffff !important;
-        box-shadow: 0 2px 8px rgba(10, 102, 194, 0.4) !important;
+        box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4) !important;
     }
 
-    /* LinkedIn Job Feed Post Card */
+    /* Job Match Card */
     .job-post-card {
         background: #111827;
         border: 1px solid #1e293b;
@@ -240,7 +241,7 @@ st.markdown(
     }
     .insight-quote-box {
         background: #0f172a;
-        border-left: 3px solid #0a66c2;
+        border-left: 3px solid #2563eb;
         border-radius: 8px;
         padding: 12px 16px;
         margin: 14px 0;
@@ -249,7 +250,7 @@ st.markdown(
         line-height: 1.5;
     }
     .apply-btn {
-        background: #0a66c2;
+        background: #2563eb;
         color: #ffffff !important;
         font-weight: 600;
         font-size: 0.9em;
@@ -259,12 +260,12 @@ st.markdown(
         display: inline-flex;
         align-items: center;
         gap: 6px;
-        box-shadow: 0 2px 6px rgba(10, 102, 194, 0.3);
+        box-shadow: 0 2px 6px rgba(37, 99, 235, 0.3);
         transition: all 0.2s ease;
     }
     .apply-btn:hover {
-        background: #004182;
-        box-shadow: 0 4px 12px rgba(10, 102, 194, 0.5);
+        background: #1d4ed8;
+        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.5);
     }
 
     /* Sidebar Styling */
@@ -333,10 +334,10 @@ with st.sidebar:
     st.markdown(
         """
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
-            <div style="background:#0a66c2; color:white; font-weight:800; font-size:1.1em; width:32px; height:32px; border-radius:6px; display:flex; align-items:center; justify-content:center;">in</div>
+            <div style="background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; font-weight: 800; font-size: 1.05em; width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4);">ED</div>
             <div>
-                <div style="font-weight:700; color:#f8fafc; font-size:1.05em;">EdgeDash Career</div>
-                <div style="font-size:0.75em; color:#94a3b8;">Intelligence Engine</div>
+                <div style="font-weight: 700; color: #f8fafc; font-size: 1.05em; letter-spacing: -0.01em;">EdgeDash</div>
+                <div style="font-size: 0.75em; color: #94a3b8;">Career Intelligence Engine</div>
             </div>
         </div>
         """,
@@ -453,21 +454,21 @@ else:
         newest_verdict = "Verified Pass"
 
 # ---------------------------------------------------------------------------
-# Top Header & LinkedIn Profile Card
+# Top Header & Candidate Profile Card
 # ---------------------------------------------------------------------------
 st.markdown(
     f"""
-    <div class="linkedin-navbar">
-        <div class="linkedin-logo">
-            <div class="logo-badge">in</div>
+    <div class="navbar-container">
+        <div class="brand-logo">
+            <div class="brand-badge">ED</div>
             <div>
-                <div class="navbar-title">EdgeDash | Professional Job Matching & Career Hub</div>
-                <div class="navbar-subtitle">Automated candidate matching, skill gap valuation, and verified pipeline insights</div>
+                <div class="navbar-title">EdgeDash | Career Intelligence Platform</div>
+                <div class="navbar-subtitle">Automated job matching, skill gap valuation, and verified pipeline insights</div>
             </div>
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
             <span style="background: rgba(16, 185, 129, 0.15); color: #34d399; padding: 5px 12px; border-radius: 20px; font-size: 0.8em; font-weight: 600; border: 1px solid rgba(16, 185, 129, 0.3);">
-                ● Live Intelligence Active
+                ● Live Telemetry Active
             </span>
         </div>
     </div>
@@ -520,7 +521,7 @@ if newest_is_failed:
             "No verified cycle data is available yet."
         )
 
-# LinkedIn Analytics & Overview Metrics
+# Overview Metrics Grid
 m_col1, m_col2, m_col3, m_col4 = st.columns(4)
 with m_col1:
     st.metric("Total Market Openings", total_listings, help="Total job listings ingested across monitored platforms.")
@@ -538,7 +539,7 @@ st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 # ---------------------------------------------------------------------------
 tab_ask, tab_listings, tab_gaps, tab_activity = st.tabs([
     "💬 AI Career Copilot",
-    "🔥 LinkedIn Job Matches", 
+    "🔥 Scored Job Matches", 
     "⚠️ Skill Gap Insights",
     "🕵️ Pipeline Activity Log",
 ])
@@ -550,7 +551,7 @@ with tab_ask:
     st.markdown(
         """
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
-            <div style="background: rgba(10, 102, 194, 0.15); color: #38bdf8; border-radius: 8px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-size: 1.1em;">✨</div>
+            <div style="background: rgba(37, 99, 235, 0.15); color: #38bdf8; border-radius: 8px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-size: 1.1em;">✨</div>
             <h3 style="margin: 0; font-size: 1.3em;">Ask Your Career Data</h3>
         </div>
         <p style="color: #94a3b8; font-size: 0.95em; margin-bottom: 16px;">
@@ -600,7 +601,7 @@ with tab_ask:
                 answer = ask(active_q, config=config, db_path=db_path)
 
                 badge_color = "#38bdf8" if answer.tool_used else "#f87171"
-                badge_bg = "rgba(10, 102, 194, 0.2)" if answer.tool_used else "rgba(239, 68, 68, 0.15)"
+                badge_bg = "rgba(37, 99, 235, 0.2)" if answer.tool_used else "rgba(239, 68, 68, 0.15)"
                 badge_text = f"Tool: {answer.tool_used}" if answer.tool_used else "Unanswerable with available tools"
 
                 st.markdown(
@@ -608,7 +609,7 @@ with tab_ask:
                     <div style="background-color: #111827; border: 1px solid #1f2937; border-left: 4px solid {badge_color}; border-radius: 14px; padding: 22px; margin: 18px 0; box-shadow: 0 10px 25px -3px rgba(0, 0, 0, 0.35);">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                             <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="background: #0a66c2; color: #ffffff; width: 22px; height: 22px; border-radius: 50%; font-size: 0.75em; display: inline-flex; align-items: center; justify-content: center; font-weight: 700;">AI</span>
+                                <span style="background: #2563eb; color: #ffffff; width: 22px; height: 22px; border-radius: 50%; font-size: 0.75em; display: inline-flex; align-items: center; justify-content: center; font-weight: 700;">AI</span>
                                 <span style="font-weight: 700; color: #f8fafc; font-size: 0.95em;">Career Copilot Synthesis</span>
                             </div>
                             <span style="background: {badge_bg}; color: {badge_color}; padding: 4px 12px; border-radius: 20px; font-size: 0.8em; font-weight: 600; border: 1px solid rgba(255, 255, 255, 0.08);">{html.escape(badge_text)}</span>
@@ -631,7 +632,7 @@ with tab_ask:
                 st.error(f"Error executing query: {exc}")
 
 # ---------------------------------------------------------------------------
-# TAB 1: SCORED JOB MATCHES (LinkedIn Job Post Card Experience)
+# TAB 1: SCORED JOB MATCHES (Rich Job Cards)
 # ---------------------------------------------------------------------------
 with tab_listings:
     st.markdown(
@@ -678,7 +679,7 @@ with tab_listings:
 
         st.markdown(f"<div style='color:#94a3b8; font-size:0.9em; margin-bottom:14px;'>Showing <strong>{len(filtered_listings)}</strong> curated matches from {len(raw_listings)} verified listings.</div>", unsafe_allow_html=True)
 
-        # Render LinkedIn-style job cards
+        # Render job cards
         for idx, l in enumerate(filtered_listings[:25]):
             score = l.get("fit_score", 0) or 0
             title = l.get("title", "Job Opening")
@@ -746,7 +747,7 @@ with tab_listings:
                 st.write(desc)
 
 # ---------------------------------------------------------------------------
-# TAB 2: SKILL GAPS ANALYSIS (LinkedIn Skill Assessments Style)
+# TAB 2: SKILL GAPS ANALYSIS
 # ---------------------------------------------------------------------------
 with tab_gaps:
     st.markdown(
@@ -794,12 +795,12 @@ with tab_gaps:
                                 <span style="background: #1e293b; color: #94a3b8; width: 26px; height: 26px; border-radius: 50%; font-size: 0.8em; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; border: 1px solid #334155;">#{index}</span>
                                 <span style="font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 1.12em; color: #f8fafc;">{html.escape(skill)}</span>
                             </div>
-                            <span style="color: #38bdf8; font-weight: 600; font-size: 0.9em; background: rgba(10, 102, 194, 0.15); padding: 3px 12px; border-radius: 14px; border: 1px solid rgba(10, 102, 194, 0.3);">
+                            <span style="color: #38bdf8; font-weight: 600; font-size: 0.9em; background: rgba(37, 99, 235, 0.15); padding: 3px 12px; border-radius: 14px; border: 1px solid rgba(37, 99, 235, 0.3);">
                                 🔒 {blocked} Listing(s) Blocked
                             </span>
                         </div>
                         <div style="width: 100%; background: #0f172a; height: 8px; border-radius: 6px; overflow: hidden; margin: 10px 0; border: 1px solid #1e293b;">
-                            <div style="width: {pct}%; background: linear-gradient(90deg, #0a66c2 0%, #38bdf8 100%); height: 100%; border-radius: 6px;"></div>
+                            <div style="width: {pct}%; background: linear-gradient(90deg, #2563eb 0%, #38bdf8 100%); height: 100%; border-radius: 6px;"></div>
                         </div>
                         <div style="display: flex; justify-content: space-between; font-size: 0.85em; color: #94a3b8;">
                             <span>📈 Opportunity Cost Score: <strong style="color: #38bdf8;">{opp_cost:.2f}</strong></span>
