@@ -29,12 +29,35 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Load configuration dynamically (Rule 3)
-@st.cache_resource
-def get_config():
-    return load_config("config.yaml")
+# ---------------------------------------------------------------------------
+# Dynamic Configuration & Session State
+# ---------------------------------------------------------------------------
+if "config_loaded" not in st.session_state:
+    cfg = load_config("config.yaml")
+    st.session_state["target_role"] = cfg.target_role
+    st.session_state["target_city"] = cfg.target_city
+    st.session_state["experience_years"] = cfg.experience_years
+    st.session_state["min_fit_score"] = cfg.min_fit_score
+    st.session_state["my_skills"] = cfg.my_skills
+    st.session_state["llm_model"] = cfg.llm_model
+    st.session_state["llm_provider"] = cfg.llm_provider
+    st.session_state["config_loaded"] = True
 
-config = get_config()
+# Active runtime configuration built from session state
+config = Config(
+    target_role=st.session_state["target_role"],
+    target_city=st.session_state["target_city"],
+    keywords=load_config("config.yaml").keywords,
+    my_skills=st.session_state["my_skills"],
+    experience_years=int(st.session_state["experience_years"]),
+    db_path=load_config("config.yaml").db_path,
+    min_fit_score=int(st.session_state["min_fit_score"]),
+    sources=load_config("config.yaml").sources,
+    use_mock_fetcher=load_config("config.yaml").use_mock_fetcher,
+    llm_provider=st.session_state.get("llm_provider", "gemini"),
+    llm_model=st.session_state.get("llm_model", "gemini-3.5-flash-lite"),
+    skill_aliases=load_config("config.yaml").skill_aliases,
+)
 db_path = config.db_path
 
 # ---------------------------------------------------------------------------
@@ -344,9 +367,17 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     
+    # Force Reload Data (Fixed & Reliable)
     if st.button("🔄 Force Reload Data", type="primary", use_container_width=True):
-        st.cache_resource.clear()
         st.cache_data.clear()
+        cfg = load_config("config.yaml")
+        st.session_state["target_role"] = cfg.target_role
+        st.session_state["target_city"] = cfg.target_city
+        st.session_state["experience_years"] = cfg.experience_years
+        st.session_state["min_fit_score"] = cfg.min_fit_score
+        st.session_state["my_skills"] = cfg.my_skills
+        st.session_state["llm_model"] = cfg.llm_model
+        st.success("Refreshed all data & configuration from disk.")
         st.rerun()
 
     st.markdown("---")
@@ -355,60 +386,62 @@ with st.sidebar:
     # Interactive Profile Customizer Expander
     with st.expander("⚙️ Customize Profile Settings", expanded=False):
         with st.form("custom_profile_form"):
-            new_role = st.text_input("🎯 Target Role:", value=config.target_role)
-            new_city = st.text_input("📍 Location / City:", value=config.target_city)
-            new_exp = st.number_input("⏳ Experience (Years):", min_value=0, max_value=30, value=int(config.experience_years), step=1)
+            new_role = st.text_input("🎯 Target Role:", value=st.session_state["target_role"])
+            new_city = st.text_input("📍 Location / City:", value=st.session_state["target_city"])
+            new_exp = st.number_input("⏳ Experience (Years):", min_value=0, max_value=30, value=int(st.session_state["experience_years"]), step=1)
+            new_threshold = st.slider("🛡️ Fit Threshold (%):", min_value=0, max_value=100, value=int(st.session_state["min_fit_score"]), step=5)
             
-            # Available LLM models list
-            model_options = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-2.5-flash", "ollama"]
-            current_model_idx = model_options.index(config.llm_model) if config.llm_model in model_options else 0
-            new_model = st.selectbox("⚡ LLM Model:", options=model_options, index=current_model_idx)
-            
-            new_threshold = st.slider("🛡️ Fit Threshold (%):", min_value=0, max_value=100, value=int(config.min_fit_score), step=5)
-            
-            skills_str = ", ".join(config.my_skills)
+            skills_str = ", ".join(st.session_state["my_skills"])
             new_skills_raw = st.text_area("🔑 Core Skills (comma-separated):", value=skills_str, height=90)
             
             save_submitted = st.form_submit_button("💾 Save Profile Settings", use_container_width=True)
 
             if save_submitted:
                 parsed_skills = [s.strip().lower() for s in new_skills_raw.split(",") if s.strip()]
+                
+                # Update session state immediately
+                st.session_state["target_role"] = new_role.strip() or config.target_role
+                st.session_state["target_city"] = new_city.strip() or config.target_city
+                st.session_state["experience_years"] = int(new_exp)
+                st.session_state["min_fit_score"] = int(new_threshold)
+                st.session_state["my_skills"] = parsed_skills or config.my_skills
+
+                # Persist to config.yaml
+                disk_cfg = load_config("config.yaml")
                 updated_config = Config(
-                    target_role=new_role.strip() or config.target_role,
-                    target_city=new_city.strip() or config.target_city,
-                    keywords=config.keywords,
-                    my_skills=parsed_skills or config.my_skills,
-                    experience_years=int(new_exp),
-                    db_path=config.db_path,
-                    min_fit_score=int(new_threshold),
-                    sources=config.sources,
-                    use_mock_fetcher=config.use_mock_fetcher,
-                    llm_provider="ollama" if new_model == "ollama" else "gemini",
-                    llm_model=new_model,
-                    skill_aliases=config.skill_aliases,
-                    min_score_spread=config.min_score_spread,
-                    min_score_stdev=config.min_score_stdev,
-                    max_empty_extraction_pct=config.max_empty_extraction_pct,
-                    max_skills_per_listing=config.max_skills_per_listing,
-                    min_gap_sample=config.min_gap_sample,
-                    max_data_age_days=config.max_data_age_days,
+                    target_role=st.session_state["target_role"],
+                    target_city=st.session_state["target_city"],
+                    keywords=disk_cfg.keywords,
+                    my_skills=st.session_state["my_skills"],
+                    experience_years=int(st.session_state["experience_years"]),
+                    db_path=disk_cfg.db_path,
+                    min_fit_score=int(st.session_state["min_fit_score"]),
+                    sources=disk_cfg.sources,
+                    use_mock_fetcher=disk_cfg.use_mock_fetcher,
+                    llm_provider=disk_cfg.llm_provider,
+                    llm_model=disk_cfg.llm_model,
+                    skill_aliases=disk_cfg.skill_aliases,
+                    min_score_spread=disk_cfg.min_score_spread,
+                    min_score_stdev=disk_cfg.min_score_stdev,
+                    max_empty_extraction_pct=disk_cfg.max_empty_extraction_pct,
+                    max_skills_per_listing=disk_cfg.max_skills_per_listing,
+                    min_gap_sample=disk_cfg.min_gap_sample,
+                    max_data_age_days=disk_cfg.max_data_age_days,
                 )
                 save_config(updated_config)
-                st.cache_resource.clear()
                 st.cache_data.clear()
-                st.success("✅ Profile settings saved to config.yaml!")
+                st.success("✅ Profile updated and saved to config.yaml!")
                 st.rerun()
 
-    # Profile Quick Summary Display
-    st.write(f"🎯 **Role:** `{config.target_role}`")
-    st.write(f"📍 **Location:** `{config.target_city}`")
-    st.write(f"⏳ **Experience:** `{config.experience_years} Years`")
-    st.write(f"⚡ **LLM Model:** `{config.llm_model}`")
-    st.write(f"🛡️ **Fit Threshold:** `{config.min_fit_score}%`")
+    # Profile Quick Summary Display (Without LLM Model per user request)
+    st.write(f"🎯 **Role:** `{st.session_state['target_role']}`")
+    st.write(f"📍 **Location:** `{st.session_state['target_city']}`")
+    st.write(f"⏳ **Experience:** `{st.session_state['experience_years']} Years`")
+    st.write(f"🛡️ **Fit Threshold:** `{st.session_state['min_fit_score']}%`")
 
     st.markdown("---")
     st.markdown("##### 🔑 My Core Skills")
-    skills_html = " ".join([f'<span style="background: #1e293b; color: #38bdf8; padding: 2px 8px; border-radius: 12px; font-size: 0.75em; display: inline-block; margin: 2px; border: 1px solid #334155;">{html.escape(s)}</span>' for s in config.my_skills[:12]])
+    skills_html = " ".join([f'<span style="background: #1e293b; color: #38bdf8; padding: 2px 8px; border-radius: 12px; font-size: 0.75em; display: inline-block; margin: 2px; border: 1px solid #334155;">{html.escape(s)}</span>' for s in st.session_state['my_skills'][:12]])
     st.markdown(skills_html, unsafe_allow_html=True)
 
 # Fetch data snapshots
@@ -477,10 +510,10 @@ st.markdown(
 )
 
 # Role initials avatar
-role_initials = "".join([w[0].upper() for w in config.target_role.split()[:2]]) if config.target_role else "CA"
+role_initials = "".join([w[0].upper() for w in st.session_state['target_role'].split()[:2]]) if st.session_state['target_role'] else "CA"
 
-# Candidate Profile Banner Card
-candidate_skills_preview = " ".join([f'<span style="background: rgba(56, 189, 248, 0.1); color: #38bdf8; padding: 3px 10px; border-radius: 12px; font-size: 0.8em; border: 1px solid rgba(56, 189, 248, 0.25);">{html.escape(s)}</span>' for s in config.my_skills[:6]])
+# Candidate Profile Banner Card (Without LLM Model per user request)
+candidate_skills_preview = " ".join([f'<span style="background: rgba(56, 189, 248, 0.1); color: #38bdf8; padding: 3px 10px; border-radius: 12px; font-size: 0.8em; border: 1px solid rgba(56, 189, 248, 0.25);">{html.escape(s)}</span>' for s in st.session_state['my_skills'][:6]])
 
 st.markdown(
     f"""
@@ -489,10 +522,10 @@ st.markdown(
             <div class="candidate-avatar">{html.escape(role_initials)}</div>
             <div>
                 <div style="font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 1.25em; color: #f8fafc;">
-                    {html.escape(config.target_role)} Profile
+                    {html.escape(st.session_state['target_role'])} Profile
                 </div>
                 <div style="color: #94a3b8; font-size: 0.9em; margin-top: 2px;">
-                    📍 {html.escape(config.target_city)} &nbsp;•&nbsp; ⏳ {config.experience_years} Years Experience &nbsp;•&nbsp; ⚡ Model: <code style="color: #38bdf8;">{html.escape(config.llm_model)}</code>
+                    📍 {html.escape(st.session_state['target_city'])} &nbsp;•&nbsp; ⏳ {st.session_state['experience_years']} Years Experience
                 </div>
                 <div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
                     {candidate_skills_preview}
@@ -501,7 +534,7 @@ st.markdown(
         </div>
         <div style="text-align: right;">
             <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em;">Match Threshold</div>
-            <div style="font-size: 1.6em; font-weight: 800; color: #34d399; font-family: 'Outfit', sans-serif;">{config.min_fit_score}%</div>
+            <div style="font-size: 1.6em; font-weight: 800; color: #34d399; font-family: 'Outfit', sans-serif;">{st.session_state['min_fit_score']}%</div>
         </div>
     </div>
     """,
@@ -632,15 +665,15 @@ with tab_ask:
                 st.error(f"Error executing query: {exc}")
 
 # ---------------------------------------------------------------------------
-# TAB 1: SCORED JOB MATCHES (Rich Job Cards)
+# TAB 1: SCORED JOB MATCHES (Customized Filter & Search)
 # ---------------------------------------------------------------------------
 with tab_listings:
     st.markdown(
-        """
+        f"""
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
             <div>
                 <h3 style="margin: 0; font-size: 1.3em;">🎯 Recommended Job Matches</h3>
-                <p style="color: #94a3b8; font-size: 0.9em; margin: 0;">Ranked by compatibility with your experience, role preferences, and verified skills.</p>
+                <p style="color: #94a3b8; font-size: 0.9em; margin: 0;">Ranked for <strong>{html.escape(st.session_state['target_role'])}</strong> in <strong>{html.escape(st.session_state['target_city'])}</strong> ({st.session_state['experience_years']} yrs exp).</p>
             </div>
         </div>
         """,
@@ -653,98 +686,124 @@ with tab_listings:
     if not raw_listings:
         st.info("No scored listings available in the latest verified snapshot.")
     else:
+        # Search & Fit Threshold Filter Controls
         f_col1, f_col2 = st.columns([2, 1])
         with f_col1:
-            search_query = st.text_input("🔍 Filter matches by title, company, or tech stack:", "")
+            search_query = st.text_input(
+                "🔍 Search listings by role, company, or skills:",
+                value="",
+                placeholder=f"e.g. {st.session_state['target_role']}, {st.session_state['target_city']}, Python, SQL",
+            )
         with f_col2:
-            min_score_filter = st.slider("🎯 Minimum Match Score:", 0, 100, int(config.min_fit_score))
+            min_score_filter = st.slider(
+                "🎯 Minimum Match Score:",
+                0,
+                100,
+                int(st.session_state['min_fit_score']),
+                help="Adjust threshold to filter higher or lower compatibility scores in real-time.",
+            )
 
+        # Dynamic Filtering based on search query, role, skills, and threshold
         filtered_listings = []
         for l in raw_listings:
             score = l.get("fit_score", 0) or 0
             title = l.get("title", "") or ""
             company = l.get("company", "") or ""
+            location = l.get("location", "") or ""
             description = l.get("description", "") or ""
             reason = l.get("fit_reason", "") or ""
 
             if score >= min_score_filter:
-                match_search = (
-                    search_query.lower() in title.lower() or
-                    search_query.lower() in company.lower() or
-                    search_query.lower() in description.lower() or
-                    search_query.lower() in reason.lower()
-                )
-                if match_search:
+                if not search_query.strip():
                     filtered_listings.append(l)
+                else:
+                    q = search_query.lower().strip()
+                    match_search = (
+                        q in title.lower() or
+                        q in company.lower() or
+                        q in location.lower() or
+                        q in description.lower() or
+                        q in reason.lower()
+                    )
+                    if match_search:
+                        filtered_listings.append(l)
 
-        st.markdown(f"<div style='color:#94a3b8; font-size:0.9em; margin-bottom:14px;'>Showing <strong>{len(filtered_listings)}</strong> curated matches from {len(raw_listings)} verified listings.</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='color:#94a3b8; font-size:0.9em; margin-bottom:14px;'>"
+            f"Showing <strong>{len(filtered_listings)}</strong> matching listings (minimum score: <strong>{min_score_filter}%</strong>) from {len(raw_listings)} verified records."
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
-        # Render job cards
-        for idx, l in enumerate(filtered_listings[:25]):
-            score = l.get("fit_score", 0) or 0
-            title = l.get("title", "Job Opening")
-            company = l.get("company", "Hiring Company")
-            location = l.get("location", "Bengaluru (Hybrid/Remote)")
-            url = l.get("url", "#")
-            reason = l.get("fit_reason", "Candidate profile matches essential technical prerequisites.")
-            desc = l.get("description", "Full job specification available on source listing.")
+        if not filtered_listings:
+            st.warning(f"No listings meet the current score threshold of {min_score_filter}% or match '{search_query}'. Try lowering the threshold.")
+        else:
+            # Render job cards
+            for idx, l in enumerate(filtered_listings[:30]):
+                score = l.get("fit_score", 0) or 0
+                title = l.get("title", "Job Opening")
+                company = l.get("company", "Hiring Company")
+                location = l.get("location", st.session_state['target_city'])
+                url = l.get("url", "#")
+                reason = l.get("fit_reason", "Candidate profile matches essential technical prerequisites.")
+                desc = l.get("description", "Full job specification available on source listing.")
 
-            # Initial avatar letters
-            company_initials = "".join([w[0].upper() for w in company.split()[:2]]) if company else "CO"
+                # Initial avatar letters
+                company_initials = "".join([w[0].upper() for w in company.split()[:2]]) if company else "CO"
 
-            # Badge Styling
-            if score >= 80:
-                badge_bg = "rgba(16, 185, 129, 0.15)"
-                badge_color = "#34d399"
-                badge_border = "rgba(16, 185, 129, 0.4)"
-                fit_label = "🔥 Strong Match"
-            elif score >= 60:
-                badge_bg = "rgba(245, 158, 11, 0.15)"
-                badge_color = "#fbbf24"
-                badge_border = "rgba(245, 158, 11, 0.4)"
-                fit_label = "⚡ Good Match"
-            else:
-                badge_bg = "rgba(239, 68, 68, 0.15)"
-                badge_color = "#f87171"
-                badge_border = "rgba(239, 68, 68, 0.4)"
-                fit_label = "⚠️ Moderate Fit"
+                # Badge Styling
+                if score >= 80:
+                    badge_bg = "rgba(16, 185, 129, 0.15)"
+                    badge_color = "#34d399"
+                    badge_border = "rgba(16, 185, 129, 0.4)"
+                    fit_label = "🔥 Strong Match"
+                elif score >= 60:
+                    badge_bg = "rgba(245, 158, 11, 0.15)"
+                    badge_color = "#fbbf24"
+                    badge_border = "rgba(245, 158, 11, 0.4)"
+                    fit_label = "⚡ Good Match"
+                else:
+                    badge_bg = "rgba(239, 68, 68, 0.15)"
+                    badge_color = "#f87171"
+                    badge_border = "rgba(239, 68, 68, 0.4)"
+                    fit_label = "⚠️ Moderate Fit"
 
-            st.markdown(
-                f"""
-                <div class="job-post-card">
-                    <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px;">
-                        <div style="display: flex; gap: 14px; align-items: center;">
-                            <div class="company-badge-avatar">{html.escape(company_initials)}</div>
-                            <div>
-                                <h4 style="margin: 0; font-size: 1.15em; color: #f8fafc;">{html.escape(title)}</h4>
-                                <div style="color: #94a3b8; font-size: 0.88em; margin-top: 2px;">
-                                    <strong style="color: #cbd5e1;">{html.escape(company)}</strong> &nbsp;•&nbsp; 📍 {html.escape(location)} &nbsp;•&nbsp; <span style="color: #38bdf8;">Verified Opening</span>
+                st.markdown(
+                    f"""
+                    <div class="job-post-card">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px;">
+                            <div style="display: flex; gap: 14px; align-items: center;">
+                                <div class="company-badge-avatar">{html.escape(company_initials)}</div>
+                                <div>
+                                    <h4 style="margin: 0; font-size: 1.15em; color: #f8fafc;">{html.escape(title)}</h4>
+                                    <div style="color: #94a3b8; font-size: 0.88em; margin-top: 2px;">
+                                        <strong style="color: #cbd5e1;">{html.escape(company)}</strong> &nbsp;•&nbsp; 📍 {html.escape(location)} &nbsp;•&nbsp; <span style="color: #38bdf8;">Verified Opening</span>
+                                    </div>
                                 </div>
                             </div>
+                            <div style="text-align: right; flex-shrink: 0;">
+                                <span class="fit-score-badge" style="background: {badge_bg}; color: {badge_color}; border: 1px solid {badge_border};">
+                                    {fit_label} &nbsp;<strong>{score}%</strong>
+                                </span>
+                            </div>
                         </div>
-                        <div style="text-align: right; flex-shrink: 0;">
-                            <span class="fit-score-badge" style="background: {badge_bg}; color: {badge_color}; border: 1px solid {badge_border};">
-                                {fit_label} &nbsp;<strong>{score}%</strong>
-                            </span>
+                        
+                        <div class="insight-quote-box">
+                            <strong style="color: #38bdf8;">💡 Why you're a fit:</strong> {html.escape(reason)}
+                        </div>
+                        
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; padding-top: 10px; border-top: 1px solid #1e293b;">
+                            <span style="font-size: 0.82em; color: #64748b;">Ingested & Scored by EdgeDash Intelligence Engine</span>
+                            <a href="{html.escape(url)}" target="_blank" class="apply-btn">
+                                Apply on Source ↗
+                            </a>
                         </div>
                     </div>
-                    
-                    <div class="insight-quote-box">
-                        <strong style="color: #38bdf8;">💡 Why you're a fit:</strong> {html.escape(reason)}
-                    </div>
-                    
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; padding-top: 10px; border-top: 1px solid #1e293b;">
-                        <span style="font-size: 0.82em; color: #64748b;">Ingested & Scored by EdgeDash Intelligence Engine</span>
-                        <a href="{html.escape(url)}" target="_blank" class="apply-btn">
-                            Apply on Source ↗
-                        </a>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            with st.expander(f"📄 View complete description for {title}"):
-                st.write(desc)
+                    """,
+                    unsafe_allow_html=True,
+                )
+                with st.expander(f"📄 View complete description for {title}"):
+                    st.write(desc)
 
 # ---------------------------------------------------------------------------
 # TAB 2: SKILL GAPS ANALYSIS
