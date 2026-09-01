@@ -46,11 +46,11 @@ class LLMError(Exception):
 # ---------------------------------------------------------------------------
 
 class _RateLimiter:
-    """Enforce 1 req/sec minimum and 15 reqs/min rolling cap."""
+    """Enforce request spacing and rolling caps to prevent rate quota violations."""
 
     def __init__(self):
         self.call_times: list[datetime] = []
-        self.min_interval = 1.0  # seconds
+        self.min_interval = 2.0  # seconds between successive calls
 
     def acquire(self) -> None:
         """Wait if necessary to satisfy both rate limits."""
@@ -59,7 +59,7 @@ class _RateLimiter:
         # Remove calls older than 1 minute
         self.call_times = [t for t in self.call_times if (now - t).total_seconds() < 60]
 
-        # Check 1/sec minimum
+        # Check minimum interval
         if self.call_times:
             last_call = self.call_times[-1]
             elapsed = (now - last_call).total_seconds()
@@ -88,7 +88,7 @@ _rate_limiter = _RateLimiter()
 # Provider implementations
 # ---------------------------------------------------------------------------
 
-def _call_gemini(prompt: str, schema: dict, max_retries: int, model: str = "gemini-2.5-flash") -> dict:
+def _call_gemini(prompt: str, schema: dict, max_retries: int, model: str = "gemini-3.5-flash-lite") -> dict:
     """Call Google Gemini API via google-genai SDK."""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -118,7 +118,7 @@ def _call_gemini(prompt: str, schema: dict, max_retries: int, model: str = "gemi
     full_prompt = f"{system_instruction}\n\n{prompt}"
 
     # Use model name from parameter
-    model_name = model or "gemini-2.5-flash"
+    model_name = model or "gemini-3.5-flash-lite"
 
     for attempt in range(max_retries + 1):
         _rate_limiter.acquire()
@@ -134,8 +134,17 @@ def _call_gemini(prompt: str, schema: dict, max_retries: int, model: str = "gemi
             text = response.text
         except Exception as exc:
             exc_str = str(exc)
-            if "429" in exc_str or "quota" in exc_str.lower():
-                backoff = 2 ** attempt
+            if "429" in exc_str or "quota" in exc_str.lower() or "resource_exhausted" in exc_str.lower():
+                # Extract explicit retry delay from API error if present
+                delay_match = re.search(r'retry in ([0-9.]+)', exc_str, re.IGNORECASE) or re.search(r'retryDelay[\'":\s]+([0-9]+)', exc_str)
+                if delay_match:
+                    try:
+                        backoff = float(delay_match.group(1)) + 1.0
+                    except (ValueError, TypeError):
+                        backoff = min(35.0, 5.0 * (attempt + 1))
+                else:
+                    backoff = min(35.0, 5.0 * (attempt + 1))
+
                 if attempt < max_retries:
                     time.sleep(backoff)
                     continue

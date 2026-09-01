@@ -35,7 +35,7 @@ sources:
 
 # LLM provider: "gemini" (free tier with GEMINI_API_KEY env var) or "ollama" (local, no key)
 llm_provider: "gemini"
-llm_model: "gemini-3.6-flash"
+llm_model: "gemini-3.5-flash-lite"
 
 # Offline development: if true, use MockFetcher instead of real sources
 use_mock_fetcher: false
