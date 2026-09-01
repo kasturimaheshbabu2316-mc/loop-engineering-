@@ -1,97 +1,61 @@
-# EdgeDash Configuration
-# Edit this file to match your profile and preferences
-
-target_role: "Data Analyst"
-target_city: "Bengaluru"
-
+target_role: Data Analyst
+target_city: Hyderabad
 keywords:
-  - "sql"
-  - "python"
-  - "tableau"
-  - "power bi"
-  - "excel"
-  - "analytics"
-  - "data visualization"
-  - "reporting"
-
+- sql
+- python
+- tableau
+- power bi
+- excel
+- analytics
+- data visualization
+- reporting
 my_skills:
-  - "sql"
-  - "python"
-  - "pandas"
-  - "excel"
-  - "tableau"
-  - "power bi"
-  - "statistics"
-  - "data cleaning"
-  - "data visualization"
-
+- sql
+- python
+- pandas
+- excel
+- tableau
+- power bi
+- statistics
+- data cleaning
+- data visualization
 experience_years: 3
-db_path: "edgedash.db"
+db_path: edgedash.db
 min_fit_score: 60
-
-# Data sources (see edgedash/sources/ for available options)
 sources:
-  - "arbeitnow"
-
-# LLM provider: "gemini" (free tier with GEMINI_API_KEY env var) or "ollama" (local, no key)
-llm_provider: "gemini"
-llm_model: "gemini-3.5-flash-lite"
-
-# Offline development: if true, use MockFetcher instead of real sources
+- arbeitnow
+llm_provider: gemini
+llm_model: gemini-3.6-flash
 use_mock_fetcher: false
-
-# Skill aliases — map raw skill strings to canonical forms
-# YOU are encouraged to edit this as you see your own data.
-# Same input always produces same output (deterministic).
-# See: python -m edgedash.skills --audit
 skill_aliases:
-  # Kubernetes variants
-  k8s: "kubernetes"
-  k3s: "kubernetes"
-  
-  # JavaScript/Node (keep separate — different skills)
-  js: "javascript"
-  es6: "javascript"
-  es2015: "javascript"
-  nodejs: "node"
-  node.js: "node"
-  
-  # Database variants
-  postgres: "postgresql"
-  psql: "postgresql"
-  pg: "postgresql"
-  
-  # Cloud platforms
-  gcp: "gcp"
-  "google cloud": "gcp"
-  "google cloud platform": "gcp"
-  aws: "aws"
-  azure: "azure"
-  
-  # Machine learning
-  ml: "machine learning"
-  "deep learning": "deep learning"
-  
-  # CI/CD
-  cicd: "ci/cd"
-  "ci cd": "ci/cd"
-  
-  # Data engineering
-  etl: "etl"
-  dbt: "dbt"
-  
-  # Messaging/queues
-  rabbitmq: "rabbitmq"
-  kafka: "kafka"
-  
-  # Monitoring
-  prometheus: "prometheus"
-  grafana: "grafana"
-
-# Verification thresholds (Rule 39)
-min_score_spread: 10          # Catches score inflation / lack of variation in score ranges
-min_score_stdev: 5            # Catches low standard deviation / identical scores across listings
-max_empty_extraction_pct: 20  # Catches broken extractor returning empty required skills
-max_skills_per_listing: 20    # Catches extractor returning full sentences or overly wordy skills
-min_gap_sample: 3             # Catches ranking/surfacing a gap based on too few samples (ranking a rumor)
-max_data_age_days: 3          # Catches data freshness/ingestion pipeline stagnation
+  k8s: kubernetes
+  k3s: kubernetes
+  js: javascript
+  es6: javascript
+  es2015: javascript
+  nodejs: node
+  node.js: node
+  postgres: postgresql
+  psql: postgresql
+  pg: postgresql
+  gcp: gcp
+  google cloud: gcp
+  google cloud platform: gcp
+  aws: aws
+  azure: azure
+  ml: machine learning
+  deep learning: deep learning
+  cicd: ci/cd
+  ci cd: ci/cd
+  etl: etl
+  dbt: dbt
+  rabbitmq: rabbitmq
+  kafka: kafka
+  prometheus: prometheus
+  grafana: grafana
+min_score_spread: 10
+min_score_stdev: 5
+max_empty_extraction_pct: 20
+max_skills_per_listing: 20
+min_gap_sample: 3
+max_data_age_days: 3
