@@ -88,7 +88,7 @@ _rate_limiter = _RateLimiter()
 # Provider implementations
 # ---------------------------------------------------------------------------
 
-def _call_gemini(prompt: str, schema: dict, max_retries: int) -> dict:
+def _call_gemini(prompt: str, schema: dict, max_retries: int, model: str = "gemini-2.5-flash") -> dict:
     """Call Google Gemini API via google-genai SDK."""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -117,12 +117,15 @@ def _call_gemini(prompt: str, schema: dict, max_retries: int) -> dict:
 
     full_prompt = f"{system_instruction}\n\n{prompt}"
 
+    # Use model name from parameter
+    model_name = model or "gemini-2.5-flash"
+
     for attempt in range(max_retries + 1):
         _rate_limiter.acquire()
 
         try:
             response = client.models.generate_content(
-                model="gemini-flash-latest",
+                model=model_name,
                 contents=full_prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.3,
@@ -155,7 +158,7 @@ def _call_gemini(prompt: str, schema: dict, max_retries: int) -> dict:
     raise LLMError("Unexpected: reached end of retry loop")
 
 
-def _call_ollama(prompt: str, schema: dict, max_retries: int) -> dict:
+def _call_ollama(prompt: str, schema: dict, max_retries: int, model: str = "mistral") -> dict:
     """Call local Ollama HTTP server."""
     ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
@@ -170,6 +173,8 @@ def _call_ollama(prompt: str, schema: dict, max_retries: int) -> dict:
         "No markdown fences. No prose. JSON only."
     )
 
+    model_name = model or "mistral"
+
     for attempt in range(max_retries + 1):
         _rate_limiter.acquire()
 
@@ -177,7 +182,7 @@ def _call_ollama(prompt: str, schema: dict, max_retries: int) -> dict:
             response = requests.post(
                 f"{ollama_url}/api/generate",
                 json={
-                    "model": "mistral",  # Use mistral or your preferred local model
+                    "model": model_name,
                     "prompt": f"{system_msg}\n\n{prompt}",
                     "stream": False,
                     "temperature": 0.3,
@@ -279,9 +284,9 @@ def complete_json(
     model = config.llm_model
 
     if provider == "gemini":
-        return _call_gemini(prompt, schema, max_retries)
+        return _call_gemini(prompt, schema, max_retries, model=model)
     elif provider == "ollama":
-        return _call_ollama(prompt, schema, max_retries)
+        return _call_ollama(prompt, schema, max_retries, model=model)
     else:
         raise LLMError(f"Unknown LLM provider: {provider}. Use 'gemini' or 'ollama'.")
 
@@ -292,6 +297,7 @@ def complete_json(
 
 if __name__ == "__main__":
     import sys
+    
 
     if len(sys.argv) > 1 and sys.argv[1] == "--check":
         try:
@@ -317,11 +323,11 @@ if __name__ == "__main__":
                 config=cfg,
             )
 
-            print(f"✓ Success! Response: {result}")
+            print(f"[OK] Success! Response: {result}")
             sys.exit(0)
 
         except Exception as exc:
-            print(f"✗ Error: {exc}", file=sys.stderr)
+            print(f"[FAIL] Error: {exc}", file=sys.stderr)
             sys.exit(1)
     else:
         print("Usage: python -m edgedash.llm --check")

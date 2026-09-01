@@ -14,7 +14,10 @@ from typing import Any
 
 from edgedash import llm, storage
 from edgedash.config import Config
+from edgedash.env import load_env
 from edgedash.query.tools import TOOLS
+
+load_env()
 
 
 # ---------------------------------------------------------------------------

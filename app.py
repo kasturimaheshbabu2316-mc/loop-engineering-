@@ -9,7 +9,10 @@ import os
 import streamlit as st
 
 from edgedash.config import load_config
+from edgedash.env import load_env
 from edgedash import storage
+
+load_env()
 
 # Page Config
 st.set_page_config(

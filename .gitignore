@@ -1,6 +1,7 @@
 # Environment variables (secrets)
 .env
 .env.local
+tests/.env
 
 # Python
 __pycache__/
