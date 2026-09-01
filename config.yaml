@@ -19,9 +19,9 @@ my_skills:
 - statistics
 - data cleaning
 - data visualization
-experience_years: 3
+experience_years: 1
 db_path: edgedash.db
-min_fit_score: 60
+min_fit_score: 25
 sources:
 - arbeitnow
 llm_provider: gemini
