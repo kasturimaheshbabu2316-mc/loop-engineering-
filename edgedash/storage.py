@@ -1,17 +1,51 @@
 """Storage module for EdgeDash.
 
-The ONLY module allowed to import sqlite3. All other modules must go through
-this interface. Swapping SQLite for Postgres in week 4 will be a one-file change.
+Supports PostgreSQL when DATABASE_URL is configured in the environment,
+with automatic fallback to local SQLite for offline development.
+Rule 2: All database access goes through this single storage module.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
+import logging
+import os
+import sys
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
+
+from edgedash.env import load_env
+
+load_env()
+
+logger = logging.getLogger(__name__)
+
+# Try importing PostgreSQL driver
+try:
+    import psycopg2
+    import psycopg2.extras
+    _PSYCOPG2_AVAILABLE = True
+except ImportError:
+    psycopg2 = None
+    _PSYCOPG2_AVAILABLE = False
+
+import sqlite3
+
+# Determine active backend
+def get_database_url() -> str | None:
+    """Read DATABASE_URL from environment."""
+    url = os.environ.get("DATABASE_URL")
+    if url and url.strip():
+        return url.strip()
+    return None
+
+_ACTIVE_BACKEND = "postgres" if get_database_url() else "sqlite"
+if _ACTIVE_BACKEND == "postgres":
+    print("[storage] Active backend: PostgreSQL (DATABASE_URL configured)", file=sys.stderr)
+else:
+    print("[storage] Active backend: SQLite (offline development fallback)", file=sys.stderr)
 
 
 def _make_listing_id(source: str, url: str) -> str:
@@ -23,13 +57,99 @@ def _make_listing_id(source: str, url: str) -> str:
     return sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def _connect(path: str | Path) -> sqlite3.Connection:
-    """Create a database connection with proper settings for concurrency."""
-    conn = sqlite3.connect(path, timeout=30.0)
-    # Enable WAL mode for better concurrent read/write performance
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
-    return conn
+class _DBConnection:
+    """Unified wrapper around SQLite and PostgreSQL connections."""
+
+    def __init__(self, raw_conn: Any, is_postgres: bool):
+        self._conn = raw_conn
+        self.is_postgres = is_postgres
+        self.row_factory = None
+
+    def cursor(self) -> _DBCursor:
+        if self.is_postgres:
+            return _DBCursor(self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor), True)
+        else:
+            cur = self._conn.cursor()
+            return _DBCursor(cur, False)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def execute(self, sql: str, params: tuple | list = ()):
+        cur = self.cursor()
+        cur.execute(sql, params)
+        return cur
+
+
+class _DBCursor:
+    """Unified wrapper around SQLite and PostgreSQL cursors."""
+
+    def __init__(self, raw_cur: Any, is_postgres: bool):
+        self._cur = raw_cur
+        self.is_postgres = is_postgres
+        self.lastrowid = getattr(raw_cur, "lastrowid", None)
+
+    def execute(self, sql: str, params: tuple | list = ()) -> _DBCursor:
+        if self.is_postgres:
+            # Convert ? placeholders to %s for PostgreSQL
+            pg_sql = sql.replace("?", "%s")
+            self._cur.execute(pg_sql, params)
+            try:
+                self.lastrowid = getattr(self._cur, "lastrowid", None)
+            except Exception:
+                pass
+        else:
+            self._cur.execute(sql, params)
+            self.lastrowid = getattr(self._cur, "lastrowid", None)
+        return self
+
+    def fetchone(self) -> Any:
+        row = self._cur.fetchone()
+        if row is None:
+            return None
+        if self.is_postgres:
+            # If row is a dict or RealDictRow, support indexing and dict conversion
+            return dict(row)
+        return row
+
+    def fetchall(self) -> list[Any]:
+        rows = self._cur.fetchall()
+        if self.is_postgres:
+            return [dict(r) for r in rows]
+        return rows
+
+    def close(self) -> None:
+        self._cur.close()
+
+
+def _connect(path: str | Path) -> _DBConnection:
+    """Create a database connection based on active backend."""
+    db_url = get_database_url()
+    if db_url:
+        if not _PSYCOPG2_AVAILABLE:
+            raise RuntimeError(
+                "DATABASE_URL is set but 'psycopg2' is not installed. "
+                "Install psycopg2-binary to connect to PostgreSQL."
+            )
+        # Handle postgres:// to postgresql:// dialect prefix if needed
+        if db_url.startswith("postgres://"):
+            db_url = "postgresql://" + db_url[len("postgres://"):]
+        raw_conn = psycopg2.connect(db_url)
+        return _DBConnection(raw_conn, is_postgres=True)
+    else:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        raw_conn = sqlite3.connect(path, timeout=30.0)
+        raw_conn.row_factory = sqlite3.Row
+        raw_conn.execute("PRAGMA journal_mode=WAL")
+        raw_conn.execute("PRAGMA busy_timeout=30000")
+        return _DBConnection(raw_conn, is_postgres=False)
 
 
 def init_db(path: str | Path) -> None:
@@ -38,145 +158,166 @@ def init_db(path: str | Path) -> None:
     Creates tables if they don't exist. Safe to call multiple times.
 
     Args:
-        path: Path to the SQLite database file.
+        path: Path to SQLite DB (or ignored if DATABASE_URL is set).
     """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
     conn = _connect(path)
     cur = conn.cursor()
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS listings (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            company TEXT,
-            location TEXT,
-            url TEXT NOT NULL,
-            description TEXT,
-            source TEXT NOT NULL,
-            posted_at TEXT,
-            fetched_at TEXT NOT NULL,
-            fit_score INTEGER,
-            fit_reason TEXT
-        )
-    """)
+    if conn.is_postgres:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS listings (
+                id VARCHAR(64) PRIMARY KEY,
+                title TEXT NOT NULL,
+                company TEXT,
+                location TEXT,
+                url TEXT NOT NULL,
+                description TEXT,
+                source VARCHAR(64) NOT NULL,
+                posted_at TEXT,
+                fetched_at TEXT NOT NULL,
+                fit_score INTEGER,
+                fit_reason TEXT
+            )
+        """)
 
-    # Create skill_gaps table with composite primary key (skill, run_id)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS skill_gaps (
-            skill TEXT,
-            frequency INTEGER NOT NULL DEFAULT 1,
-            last_seen TEXT NOT NULL,
-            run_id INTEGER,
-            computed_at TEXT,
-            listings_blocked INTEGER,
-            opportunity_cost REAL,
-            mean_score REAL,
-            top_score INTEGER,
-            example_ids TEXT,
-            PRIMARY KEY (skill, run_id)
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS skill_gaps (
+                skill TEXT,
+                frequency INTEGER NOT NULL DEFAULT 1,
+                last_seen TEXT NOT NULL,
+                run_id INTEGER NOT NULL DEFAULT 0,
+                computed_at TEXT,
+                listings_blocked INTEGER,
+                opportunity_cost REAL,
+                mean_score REAL,
+                top_score INTEGER,
+                example_ids TEXT,
+                PRIMARY KEY (skill, run_id)
+            )
+        """)
 
-    # Check if we need to migrate existing skill_gaps table from old schema (PRIMARY KEY (skill))
-    cur.execute("PRAGMA table_info(skill_gaps)")
-    columns = cur.fetchall()
-    if columns:
-        pk_cols = [col[1] for col in columns if col[5] > 0]
-        if pk_cols == ["skill"]:
-            cur.execute("ALTER TABLE skill_gaps RENAME TO skill_gaps_old")
-            cur.execute("""
-                CREATE TABLE skill_gaps (
-                    skill TEXT,
-                    frequency INTEGER NOT NULL DEFAULT 1,
-                    last_seen TEXT NOT NULL,
-                    run_id INTEGER,
-                    computed_at TEXT,
-                    listings_blocked INTEGER,
-                    opportunity_cost REAL,
-                    mean_score REAL,
-                    top_score INTEGER,
-                    example_ids TEXT,
-                    PRIMARY KEY (skill, run_id)
-                )
-            """)
-            # Copy whatever columns exist in the old table
-            old_col_names = [col[1] for col in columns]
-            cols_str = ", ".join(old_col_names)
-            cur.execute(f"INSERT INTO skill_gaps ({cols_str}) SELECT {cols_str} FROM skill_gaps_old")
-            cur.execute("DROP TABLE skill_gaps_old")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS cycle_log (
+                id SERIAL PRIMARY KEY,
+                agent TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                records_touched INTEGER,
+                status TEXT,
+                notes TEXT
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS cycle_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            finished_at TEXT,
-            records_touched INTEGER,
-            status TEXT,
-            notes TEXT
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS extraction_cache (
+                description_hash VARCHAR(64) PRIMARY KEY,
+                extraction TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
 
-    # Per steering rule 18: extraction cache table (safe to add on existing db)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS extraction_cache (
-            description_hash TEXT PRIMARY KEY,
-            extraction TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS query_log (
+                id SERIAL PRIMARY KEY,
+                question TEXT NOT NULL,
+                tool_chosen TEXT,
+                params TEXT,
+                answerable INTEGER NOT NULL,
+                duration_ms REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                answer_text TEXT
+            )
+        """)
+    else:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS listings (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                company TEXT,
+                location TEXT,
+                url TEXT NOT NULL,
+                description TEXT,
+                source TEXT NOT NULL,
+                posted_at TEXT,
+                fetched_at TEXT NOT NULL,
+                fit_score INTEGER,
+                fit_reason TEXT
+            )
+        """)
 
-    # Query pipeline log table (Rule 42)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS query_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            question TEXT NOT NULL,
-            tool_chosen TEXT,
-            params TEXT,
-            answerable INTEGER NOT NULL,
-            duration_ms REAL NOT NULL,
-            created_at TEXT NOT NULL,
-            answer_text TEXT
-        )
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS skill_gaps (
+                skill TEXT,
+                frequency INTEGER NOT NULL DEFAULT 1,
+                last_seen TEXT NOT NULL,
+                run_id INTEGER NOT NULL DEFAULT 0,
+                computed_at TEXT,
+                listings_blocked INTEGER,
+                opportunity_cost REAL,
+                mean_score REAL,
+                top_score INTEGER,
+                example_ids TEXT,
+                PRIMARY KEY (skill, run_id)
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS cycle_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                records_touched INTEGER,
+                status TEXT,
+                notes TEXT
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS extraction_cache (
+                description_hash TEXT PRIMARY KEY,
+                extraction TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS query_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question TEXT NOT NULL,
+                tool_chosen TEXT,
+                params TEXT,
+                answerable INTEGER NOT NULL,
+                duration_ms REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                answer_text TEXT
+            )
+        """)
 
     conn.commit()
     conn.close()
 
 
 def upsert_listings(db_path: str | Path, rows: list[dict[str, Any]]) -> int:
-    """Insert new listings, ignoring duplicates.
-
-    Uses INSERT OR IGNORE on the primary key (id) for deduplication.
-    The listing ID is a stable hash of source + url.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        rows: List of listing dicts with keys:
-            source, url, title, company, location, description, posted_at, fetched_at
-
-    Returns:
-        Count of genuinely NEW rows inserted (not updated/ignored).
-    """
+    """Insert new listings, ignoring duplicates."""
     if not rows:
         return 0
 
     conn = _connect(db_path)
     cur = conn.cursor()
 
-    # Count before insert
     cur.execute("SELECT COUNT(*) FROM listings")
-    count_before = cur.fetchone()[0]
+    first_row = cur.fetchone()
+    count_before = first_row["count"] if isinstance(first_row, dict) else first_row[0]
 
     for row in rows:
         listing_id = _make_listing_id(row["source"], row["url"])
         cur.execute(
             """
-            INSERT OR IGNORE INTO listings
+            INSERT INTO listings
                 (id, title, company, location, url, description, source, posted_at, fetched_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (id) DO NOTHING
             """,
             (
                 listing_id,
@@ -193,42 +334,35 @@ def upsert_listings(db_path: str | Path, rows: list[dict[str, Any]]) -> int:
 
     conn.commit()
 
-    # Count after insert
     cur.execute("SELECT COUNT(*) FROM listings")
-    count_after = cur.fetchone()[0]
+    second_row = cur.fetchone()
+    count_after = second_row["count"] if isinstance(second_row, dict) else second_row[0]
 
     conn.close()
-
     return count_after - count_before
 
 
 def count_unscored(db_path: str | Path) -> int:
-    """Return the count of listings without a fit_score.
-
-    Args:
-        db_path: Path to the SQLite database file.
-    """
+    """Return the count of listings without a fit_score."""
     conn = _connect(db_path)
     cur = conn.cursor()
 
     cur.execute("SELECT COUNT(*) FROM listings WHERE fit_score IS NULL")
-    count = cur.fetchone()[0]
+    row = cur.fetchone()
+    count = row["count"] if isinstance(row, dict) else row[0]
 
     conn.close()
     return count
 
 
 def last_fetch_time(db_path: str | Path) -> str | None:
-    """Return the ISO timestamp of the most recent fetch, or None if no listings.
-
-    Args:
-        db_path: Path to the SQLite database file.
-    """
+    """Return the ISO timestamp of the most recent fetch, or None if no listings."""
     conn = _connect(db_path)
     cur = conn.cursor()
 
     cur.execute("SELECT MAX(fetched_at) FROM listings")
-    result = cur.fetchone()[0]
+    row = cur.fetchone()
+    result = row["max"] if isinstance(row, dict) and "max" in row else (row[0] if row else None)
 
     conn.close()
     return result
@@ -243,48 +377,34 @@ def log_cycle(
     status: str = "running",
     notes: str | None = None,
 ) -> int:
-    """Write a row to the cycle_log table.
+    """Write a row to the cycle_log table."""
+    conn = _connect(db_path)
+    cur = conn.cursor()
 
-    Every agent run MUST log a cycle row for observability.
+    if conn.is_postgres:
+        cur.execute(
+            """
+            INSERT INTO cycle_log (agent, started_at, finished_at, records_touched, status, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+            RETURNING id
+            """,
+            (agent, started_at, finished_at, records_touched, status, notes),
+        )
+        row = cur.fetchone()
+        rowid = row["id"] if isinstance(row, dict) else row[0]
+    else:
+        cur.execute(
+            """
+            INSERT INTO cycle_log (agent, started_at, finished_at, records_touched, status, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (agent, started_at, finished_at, records_touched, status, notes),
+        )
+        rowid = cur.lastrowid
 
-    Args:
-        db_path: Path to the SQLite database file.
-        agent: Name of the agent (e.g. "Fetcher", "Scorer").
-        started_at: ISO timestamp when the cycle started.
-        finished_at: ISO timestamp when the cycle finished (None if still running).
-        records_touched: Number of records processed.
-        status: "running", "success", or "failed".
-        notes: Any additional context (e.g. retry reason, error message).
-
-    Returns:
-        The rowid of the inserted log entry.
-    """
-    import time
-
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            conn = _connect(db_path)
-            cur = conn.cursor()
-
-            cur.execute(
-                """
-                INSERT INTO cycle_log (agent, started_at, finished_at, records_touched, status, notes)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (agent, started_at, finished_at, records_touched, status, notes),
-            )
-
-            rowid = cur.lastrowid
-            conn.commit()
-            conn.close()
-            return rowid
-
-        except sqlite3.OperationalError as e:
-            if "locked" in str(e) and attempt < max_retries - 1:
-                time.sleep(0.5 * (attempt + 1))  # Exponential backoff
-                continue
-            raise
+    conn.commit()
+    conn.close()
+    return rowid or 0
 
 
 def get_listings(
@@ -292,18 +412,8 @@ def get_listings(
     limit: int = 100,
     min_score: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Retrieve listings from the database.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        limit: Maximum number of listings to return.
-        min_score: Minimum fit_score filter (None for no filter).
-
-    Returns:
-        List of listing dicts with all columns.
-    """
+    """Retrieve listings from the database."""
     conn = _connect(db_path)
-    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     if min_score is not None:
@@ -326,10 +436,9 @@ def get_listings(
             (limit,),
         )
 
-    rows = [dict(row) for row in cur.fetchall()]
+    rows = cur.fetchall()
     conn.close()
-
-    return rows
+    return [dict(row) for row in rows]
 
 
 def update_listing_score(
@@ -338,14 +447,7 @@ def update_listing_score(
     fit_score: int,
     fit_reason: str | None = None,
 ) -> None:
-    """Update the fit_score for a specific listing.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        listing_id: The listing's primary key.
-        fit_score: Computed fit score (0-100).
-        fit_reason: Human-readable explanation for the score.
-    """
+    """Update the fit_score for a specific listing."""
     conn = _connect(db_path)
     cur = conn.cursor()
 
@@ -363,17 +465,8 @@ def update_listing_score(
 
 
 def get_unscored_listings(db_path: str | Path, limit: int = 100) -> list[dict[str, Any]]:
-    """Retrieve listings that have not yet been scored.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        limit: Maximum number of listings to return.
-
-    Returns:
-        List of listing dicts with all columns where fit_score IS NULL.
-    """
+    """Retrieve listings that have not yet been scored."""
     conn = _connect(db_path)
-    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     cur.execute(
@@ -386,66 +479,60 @@ def get_unscored_listings(db_path: str | Path, limit: int = 100) -> list[dict[st
         (limit,),
     )
 
-    rows = [dict(row) for row in cur.fetchall()]
+    rows = cur.fetchall()
     conn.close()
-
-    return rows
+    return [dict(row) for row in rows]
 
 
 def upsert_skill_gaps(
     db_path: str | Path,
     gaps: list[dict[str, Any]],
 ) -> int:
-    """Upsert skill gaps into the database.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        gaps: List of gap dicts with keys: skill, frequency, last_seen.
-
-    Returns:
-        Number of gaps upserted.
-    """
+    """Upsert skill gaps into the database."""
     if not gaps:
         return 0
 
     conn = _connect(db_path)
     cur = conn.cursor()
 
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     for gap in gaps:
         skill = gap.get("skill")
         frequency = gap.get("frequency", 1)
+        run_id = gap.get("run_id", 0) or 0
+        computed_at = gap.get("computed_at", now)
+        blocked = gap.get("listings_blocked", 0)
+        opp_cost = gap.get("opportunity_cost", 0.0)
+        mean_score = gap.get("mean_score", 0.0)
+        top_score = gap.get("top_score", 0)
+        example_ids = gap.get("example_ids", "[]")
 
         cur.execute(
             """
-            INSERT INTO skill_gaps (skill, frequency, last_seen)
-            VALUES (?, ?, ?)
-            ON CONFLICT(skill) DO UPDATE SET
-                frequency = frequency + ?,
-                last_seen = ?
+            INSERT INTO skill_gaps (skill, frequency, last_seen, run_id, computed_at, listings_blocked, opportunity_cost, mean_score, top_score, example_ids)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (skill, run_id) DO UPDATE SET
+                frequency = skill_gaps.frequency + EXCLUDED.frequency,
+                last_seen = EXCLUDED.last_seen,
+                computed_at = EXCLUDED.computed_at,
+                listings_blocked = EXCLUDED.listings_blocked,
+                opportunity_cost = EXCLUDED.opportunity_cost,
+                mean_score = EXCLUDED.mean_score,
+                top_score = EXCLUDED.top_score,
+                example_ids = EXCLUDED.example_ids
             """,
-            (skill, frequency, now, frequency, now),
+            (skill, frequency, now, run_id, computed_at, blocked, opp_cost, mean_score, top_score, example_ids),
         )
 
     conn.commit()
     conn.close()
-
     return len(gaps)
 
 
 def get_skill_gaps(db_path: str | Path, limit: int = 50) -> list[dict[str, Any]]:
-    """Retrieve skill gaps ordered by frequency.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        limit: Maximum number of gaps to return.
-
-    Returns:
-        List of gap dicts with keys: skill, frequency, last_seen.
-    """
+    """Retrieve skill gaps ordered by frequency."""
     conn = _connect(db_path)
-    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     cur.execute(
@@ -457,28 +544,15 @@ def get_skill_gaps(db_path: str | Path, limit: int = 50) -> list[dict[str, Any]]
         (limit,),
     )
 
-    rows = [dict(row) for row in cur.fetchall()]
+    rows = cur.fetchall()
     conn.close()
+    return [dict(row) for row in rows]
 
-    return rows
-
-
-# ---------------------------------------------------------------------------
-# Extraction cache (per steering rule 18)
-# ---------------------------------------------------------------------------
 
 def get_extraction_cache(
     db_path: str | Path, description_hash: str
 ) -> dict[str, Any] | None:
-    """Retrieve cached extraction result by description hash.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        description_hash: Hash of job description (from _hash_description).
-
-    Returns:
-        Cached extraction dict, or None if not found.
-    """
+    """Retrieve cached extraction result by description hash."""
     conn = _connect(db_path)
     cur = conn.cursor()
 
@@ -494,7 +568,8 @@ def get_extraction_cache(
     conn.close()
 
     if row:
-        return json.loads(row[0])
+        val = row["extraction"] if isinstance(row, dict) else row[0]
+        return json.loads(val)
     return None
 
 
@@ -503,24 +578,20 @@ def upsert_extraction_cache(
     description_hash: str,
     extraction: dict[str, Any],
 ) -> None:
-    """Store extraction result in cache.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        description_hash: Hash of job description.
-        extraction: Extraction result dict to cache.
-    """
+    """Store extraction result in cache."""
     conn = _connect(db_path)
     cur = conn.cursor()
 
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     extraction_json = json.dumps(extraction)
 
     cur.execute(
         """
-        INSERT OR REPLACE INTO extraction_cache
-            (description_hash, extraction, created_at)
+        INSERT INTO extraction_cache (description_hash, extraction, created_at)
         VALUES (?, ?, ?)
+        ON CONFLICT (description_hash) DO UPDATE SET
+            extraction = EXCLUDED.extraction,
+            created_at = EXCLUDED.created_at
         """,
         (description_hash, extraction_json, now),
     )
@@ -529,15 +600,11 @@ def upsert_extraction_cache(
     conn.close()
 
 
-# ---------------------------------------------------------------------------
-# Dashboard queries (Rule 38)
-# ---------------------------------------------------------------------------
-
 def get_last_passing_verifier_time(db_path: str | Path) -> str | None:
     """Retrieve the finished_at timestamp of the last passing Verifier cycle."""
-    conn = _connect(db_path)
-    cur = conn.cursor()
     try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
         cur.execute(
             """
             SELECT finished_at FROM cycle_log
@@ -546,19 +613,19 @@ def get_last_passing_verifier_time(db_path: str | Path) -> str | None:
             """
         )
         row = cur.fetchone()
-        return row[0] if row else None
-    except sqlite3.OperationalError:
-        return None
-    finally:
         conn.close()
+        if row:
+            return row["finished_at"] if isinstance(row, dict) else row[0]
+        return None
+    except Exception:
+        return None
 
 
 def get_newest_verifier_cycle(db_path: str | Path) -> dict[str, Any] | None:
     """Retrieve the newest Verifier cycle row from cycle_log."""
-    conn = _connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
     try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
         cur.execute(
             """
             SELECT * FROM cycle_log
@@ -567,35 +634,36 @@ def get_newest_verifier_cycle(db_path: str | Path) -> dict[str, Any] | None:
             """
         )
         row = cur.fetchone()
-        return dict(row) if row else None
-    except sqlite3.OperationalError:
-        return None
-    finally:
         conn.close()
+        return dict(row) if row else None
+    except Exception:
+        return None
 
 
 def get_total_counts(db_path: str | Path) -> tuple[int, int]:
     """Return (total_listings, total_scored_listings)."""
-    conn = _connect(db_path)
-    cur = conn.cursor()
     try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM listings")
-        total = cur.fetchone()[0]
+        r1 = cur.fetchone()
+        total = r1["count"] if isinstance(r1, dict) else r1[0]
+
         cur.execute("SELECT COUNT(*) FROM listings WHERE fit_score IS NOT NULL")
-        scored = cur.fetchone()[0]
-        return total, scored
-    except sqlite3.OperationalError:
-        return 0, 0
-    finally:
+        r2 = cur.fetchone()
+        scored = r2["count"] if isinstance(r2, dict) else r2[0]
+
         conn.close()
+        return total, scored
+    except Exception:
+        return 0, 0
 
 
 def get_verified_listings(db_path: str | Path, verifier_time: str | None, limit: int = 10) -> list[dict[str, Any]]:
     """Retrieve top scored listings fetched at or before the last passing verifier time."""
-    conn = _connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
     try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
         if verifier_time:
             cur.execute(
                 """
@@ -616,21 +684,19 @@ def get_verified_listings(db_path: str | Path, verifier_time: str | None, limit:
                 """,
                 (limit,),
             )
-        return [dict(row) for row in cur.fetchall()]
-    except sqlite3.OperationalError:
-        return []
-    finally:
+        rows = cur.fetchall()
         conn.close()
+        return [dict(row) for row in rows]
+    except Exception:
+        return []
 
 
 def get_verified_skill_gaps(db_path: str | Path, verifier_time: str | None, limit: int = 10) -> list[dict[str, Any]]:
     """Retrieve top skill gaps computed at or before the last passing verifier time."""
-    conn = _connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
     try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
         if verifier_time:
-            # Find the run_id that was active at or before verifier_time
             cur.execute(
                 """
                 SELECT MAX(run_id) FROM skill_gaps
@@ -638,12 +704,15 @@ def get_verified_skill_gaps(db_path: str | Path, verifier_time: str | None, limi
                 """,
                 (verifier_time,),
             )
-            run_id = cur.fetchone()[0]
+            r = cur.fetchone()
+            run_id = r["max"] if isinstance(r, dict) and "max" in r else (r[0] if r else None)
         else:
             cur.execute("SELECT MAX(run_id) FROM skill_gaps")
-            run_id = cur.fetchone()[0]
+            r = cur.fetchone()
+            run_id = r["max"] if isinstance(r, dict) and "max" in r else (r[0] if r else None)
 
         if run_id is None:
+            conn.close()
             return []
 
         cur.execute(
@@ -655,20 +724,18 @@ def get_verified_skill_gaps(db_path: str | Path, verifier_time: str | None, limi
             """,
             (run_id, limit),
         )
-        return [dict(row) for row in cur.fetchall()]
-    except sqlite3.OperationalError:
-        return []
-    finally:
+        rows = cur.fetchall()
         conn.close()
+        return [dict(row) for row in rows]
+    except Exception:
+        return []
 
 
 def get_activity_log(db_path: str | Path, limit: int = 30) -> list[dict[str, Any]]:
     """Retrieve activity log for the last 30 cycles."""
-    conn = _connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
     try:
-        # Fetch the most recent Orchestrator cycles
+        conn = _connect(db_path)
+        cur = conn.cursor()
         cur.execute(
             """
             SELECT * FROM cycle_log
@@ -678,61 +745,54 @@ def get_activity_log(db_path: str | Path, limit: int = 30) -> list[dict[str, Any
             (limit,),
         )
         orch_runs = [dict(row) for row in cur.fetchall()]
-        
+
         cycles = []
         for orch in orch_runs:
-            # Fetch any Verifier run associated with this orchestrator run
-            # We look for a Verifier entry started between orch.started_at and 20 seconds after finished_at
+            s_time = orch.get("started_at")
+            f_time = orch.get("finished_at")
+            
+            # Compute window end in python for clean cross-DB compatibility
+            window_end = f_time
+            if f_time:
+                try:
+                    dt = datetime.fromisoformat(f_time.replace("Z", "+00:00"))
+                    window_end = (dt + timedelta(seconds=20)).isoformat()
+                except Exception:
+                    pass
+
             cur.execute(
                 """
                 SELECT * FROM cycle_log
-                WHERE agent = 'Verifier' AND started_at >= ? AND started_at <= datetime(?, '+20 seconds')
+                WHERE agent = 'Verifier' AND started_at >= ? AND started_at <= ?
                 ORDER BY id DESC LIMIT 1
                 """,
-                (orch["started_at"], orch["finished_at"]),
+                (s_time, window_end),
             )
             ver_row = cur.fetchone()
             ver = dict(ver_row) if ver_row else None
-            
+
             cycles.append({
                 "orchestrator": orch,
                 "verifier": ver,
             })
-            
-        return cycles
-    except sqlite3.OperationalError:
-        return []
-    finally:
+
         conn.close()
+        return cycles
+    except Exception:
+        return []
 
-
-# ---------------------------------------------------------------------------
-# Query Tools Storage Layer (Rules 2, 41, 46)
-# ---------------------------------------------------------------------------
 
 def get_companies_hiring(
     db_path: str | Path,
     days: int = 7,
     verifier_time: str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Retrieve companies with listings posted in the last N days and their counts.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        days: Number of days to look back.
-        verifier_time: Timestamp of last passing verifier cycle (Rule 46).
-
-    Returns:
-        tuple of (list of company dicts with keys 'company' and 'count', total listings count).
-    """
-    from datetime import datetime, timezone, timedelta
-
+    """Retrieve companies with listings posted in the last N days and their counts."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    conn = _connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
     try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
         if verifier_time:
             cur.execute(
                 """
@@ -757,7 +817,8 @@ def get_companies_hiring(
                 """,
                 (cutoff, cutoff, verifier_time),
             )
-            total_listings = cur.fetchone()[0]
+            r = cur.fetchone()
+            total_listings = r["count"] if isinstance(r, dict) else r[0]
         else:
             cur.execute(
                 """
@@ -780,13 +841,13 @@ def get_companies_hiring(
                 """,
                 (cutoff, cutoff),
             )
-            total_listings = cur.fetchone()[0]
+            r = cur.fetchone()
+            total_listings = r["count"] if isinstance(r, dict) else r[0]
 
-        return companies, total_listings
-    except sqlite3.OperationalError:
-        return [], 0
-    finally:
         conn.close()
+        return companies, total_listings
+    except Exception:
+        return [], 0
 
 
 def get_best_matches(
@@ -794,20 +855,10 @@ def get_best_matches(
     n: int = 10,
     verifier_time: str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Retrieve top N highest-scoring listings with score, title, company, reason.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        n: Number of listings to return.
-        verifier_time: Timestamp of last passing verifier cycle (Rule 46).
-
-    Returns:
-        tuple of (list of matched listing dicts, total scored listings count).
-    """
-    conn = _connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
+    """Retrieve top N highest-scoring listings with score, title, company, reason."""
     try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
         if verifier_time:
             cur.execute(
                 """
@@ -825,7 +876,8 @@ def get_best_matches(
                 "SELECT COUNT(*) FROM listings WHERE fit_score IS NOT NULL AND fetched_at <= ?",
                 (verifier_time,),
             )
-            total_scored = cur.fetchone()[0]
+            r = cur.fetchone()
+            total_scored = r["count"] if isinstance(r, dict) else r[0]
         else:
             cur.execute(
                 """
@@ -840,39 +892,33 @@ def get_best_matches(
             matches = [dict(row) for row in cur.fetchall()]
 
             cur.execute("SELECT COUNT(*) FROM listings WHERE fit_score IS NOT NULL")
-            total_scored = cur.fetchone()[0]
+            r = cur.fetchone()
+            total_scored = r["count"] if isinstance(r, dict) else r[0]
 
-        return matches, total_scored
-    except sqlite3.OperationalError:
-        return [], 0
-    finally:
         conn.close()
+        return matches, total_scored
+    except Exception:
+        return [], 0
 
 
 def get_known_skills(db_path: str | Path) -> set[str]:
-    """Retrieve all unique skills present in the database (skill_gaps and extraction_cache).
-
-    Args:
-        db_path: Path to the SQLite database file.
-
-    Returns:
-        Set of lowercase raw and canonical skill strings found in the DB.
-    """
-    conn = _connect(db_path)
-    cur = conn.cursor()
-    known = set()
+    """Retrieve all unique skills present in the database."""
     try:
-        # From skill_gaps table
+        conn = _connect(db_path)
+        cur = conn.cursor()
+        known = set()
+
         cur.execute("SELECT DISTINCT skill FROM skill_gaps WHERE skill IS NOT NULL")
         for row in cur.fetchall():
-            if row[0]:
-                known.add(row[0].strip().lower())
+            val = row["skill"] if isinstance(row, dict) else row[0]
+            if val:
+                known.add(val.strip().lower())
 
-        # From extraction_cache
         cur.execute("SELECT extraction FROM extraction_cache")
         for row in cur.fetchall():
+            val = row["extraction"] if isinstance(row, dict) else row[0]
             try:
-                data = json.loads(row[0])
+                data = json.loads(val)
                 for s in data.get("required_skills", []):
                     if s:
                         known.add(str(s).strip().lower())
@@ -881,11 +927,11 @@ def get_known_skills(db_path: str | Path) -> set[str]:
                         known.add(str(s).strip().lower())
             except (json.JSONDecodeError, TypeError, KeyError):
                 pass
-        return known
-    except sqlite3.OperationalError:
-        return set()
-    finally:
+
         conn.close()
+        return known
+    except Exception:
+        return set()
 
 
 def get_gap_detail(
@@ -893,20 +939,11 @@ def get_gap_detail(
     skill: str,
     verifier_time: str | None = None,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    """Retrieve gap detail for a named skill and its blocked example listings.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        skill: Canonical skill name.
-        verifier_time: Timestamp of last passing verifier cycle (Rule 46).
-
-    Returns:
-        tuple of (gap dict or None, list of blocked example listing dicts).
-    """
-    conn = _connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
+    """Retrieve gap detail for a named skill and its blocked example listings."""
     try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
+
         if verifier_time:
             cur.execute(
                 """
@@ -915,10 +952,12 @@ def get_gap_detail(
                 """,
                 (verifier_time,),
             )
-            run_id = cur.fetchone()[0]
+            r = cur.fetchone()
+            run_id = r["max"] if isinstance(r, dict) and "max" in r else (r[0] if r else None)
         else:
             cur.execute("SELECT MAX(run_id) FROM skill_gaps")
-            run_id = cur.fetchone()[0]
+            r = cur.fetchone()
+            run_id = r["max"] if isinstance(r, dict) and "max" in r else (r[0] if r else None)
 
         if run_id is None:
             cur.execute(
@@ -926,7 +965,7 @@ def get_gap_detail(
                 SELECT skill, listings_blocked, opportunity_cost, mean_score, top_score, example_ids
                 FROM skill_gaps
                 WHERE lower(skill) = lower(?)
-                ORDER BY rowid DESC LIMIT 1
+                ORDER BY frequency DESC LIMIT 1
                 """,
                 (skill,),
             )
@@ -942,6 +981,7 @@ def get_gap_detail(
 
         gap_row = cur.fetchone()
         if not gap_row:
+            conn.close()
             return None, []
 
         gap_data = dict(gap_row)
@@ -966,11 +1006,10 @@ def get_gap_detail(
             )
             listings = [dict(row) for row in cur.fetchall()]
 
-        return gap_data, listings
-    except sqlite3.OperationalError:
-        return None, []
-    finally:
         conn.close()
+        return gap_data, listings
+    except Exception:
+        return None, []
 
 
 def get_gap_trend(
@@ -978,24 +1017,13 @@ def get_gap_trend(
     weeks: int = 3,
     verifier_time: str | None = None,
 ) -> tuple[list[dict[str, Any]], int, str | None, str | None]:
-    """Retrieve skill gap trend over N weeks from snapshots.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        weeks: Number of weeks to look back.
-        verifier_time: Timestamp of last passing verifier cycle (Rule 46).
-
-    Returns:
-        tuple of (trend_items, num_snapshots, earliest_date, latest_date).
-    """
-    from datetime import datetime, timezone, timedelta
-
+    """Retrieve skill gap trend over N weeks from snapshots."""
     cutoff = (datetime.now(timezone.utc) - timedelta(weeks=weeks)).isoformat()
 
-    conn = _connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
     try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
+
         if verifier_time:
             cur.execute(
                 """
@@ -1041,6 +1069,7 @@ def get_gap_trend(
             runs = [dict(row) for row in cur.fetchall()]
 
         if not runs:
+            conn.close()
             return [], 0, None, None
 
         earliest_run = runs[0]["run_id"]
@@ -1072,7 +1101,7 @@ def get_gap_trend(
 
         trend_items = []
         for skill, latest_item in latest_rows.items():
-            latest_cost = latest_item["opportunity_cost"] or 0.0
+            latest_cost = latest_item.get("opportunity_cost") or 0.0
             earliest_item = earliest_rows.get(skill)
 
             if earliest_item is None or earliest_run == latest_run:
@@ -1081,7 +1110,7 @@ def get_gap_trend(
                 pct_change = 0.0 if earliest_run == latest_run else 100.0
                 earliest_cost = latest_cost if earliest_run == latest_run else 0.0
             else:
-                earliest_cost = earliest_item["opportunity_cost"] or 0.0
+                earliest_cost = earliest_item.get("opportunity_cost") or 0.0
                 delta = latest_cost - earliest_cost
                 pct_change = ((latest_cost - earliest_cost) / earliest_cost * 100.0) if earliest_cost > 0 else 0.0
                 if delta > 0.01:
@@ -1098,13 +1127,13 @@ def get_gap_trend(
                 "delta": round(delta, 2),
                 "pct_change": round(pct_change, 1),
                 "status": status,
-                "listings_blocked": latest_item["listings_blocked"],
+                "listings_blocked": latest_item.get("listings_blocked", 0),
             })
 
         if earliest_run != latest_run:
             for skill, earliest_item in earliest_rows.items():
                 if skill not in latest_rows:
-                    earliest_cost = earliest_item["opportunity_cost"] or 0.0
+                    earliest_cost = earliest_item.get("opportunity_cost") or 0.0
                     trend_items.append({
                         "skill": skill,
                         "latest_cost": 0.0,
@@ -1116,60 +1145,61 @@ def get_gap_trend(
                     })
 
         trend_items.sort(key=lambda x: (x["latest_cost"], x["earliest_cost"]), reverse=True)
-        return trend_items, len(runs), earliest_date, latest_date
-    except sqlite3.OperationalError:
-        return [], 0, None, None
-    finally:
         conn.close()
+        return trend_items, len(runs), earliest_date, latest_date
+    except Exception:
+        return [], 0, None, None
 
 
 def get_listing_counts_summary(
     db_path: str | Path,
     verifier_time: str | None = None,
 ) -> dict[str, Any]:
-    """Retrieve totals: total listings, scored, unscored, newest listing date.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        verifier_time: Timestamp of last passing verifier cycle (Rule 46).
-
-    Returns:
-        dict with total_listings, scored_listings, unscored_listings, newest_listing_date.
-    """
-    conn = _connect(db_path)
-    cur = conn.cursor()
+    """Retrieve totals: total listings, scored, unscored, newest listing date."""
     try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
+
         if verifier_time:
             cur.execute("SELECT COUNT(*) FROM listings WHERE fetched_at <= ?", (verifier_time,))
-            total = cur.fetchone()[0]
+            r1 = cur.fetchone()
+            total = r1["count"] if isinstance(r1, dict) else r1[0]
+
             cur.execute("SELECT COUNT(*) FROM listings WHERE fit_score IS NOT NULL AND fetched_at <= ?", (verifier_time,))
-            scored = cur.fetchone()[0]
+            r2 = cur.fetchone()
+            scored = r2["count"] if isinstance(r2, dict) else r2[0]
+
             cur.execute("SELECT MAX(COALESCE(posted_at, fetched_at)) FROM listings WHERE fetched_at <= ?", (verifier_time,))
-            newest_date = cur.fetchone()[0]
+            r3 = cur.fetchone()
+            newest_date = r3["max"] if isinstance(r3, dict) and "max" in r3 else (r3[0] if r3 else None)
         else:
             cur.execute("SELECT COUNT(*) FROM listings")
-            total = cur.fetchone()[0]
+            r1 = cur.fetchone()
+            total = r1["count"] if isinstance(r1, dict) else r1[0]
+
             cur.execute("SELECT COUNT(*) FROM listings WHERE fit_score IS NOT NULL")
-            scored = cur.fetchone()[0]
+            r2 = cur.fetchone()
+            scored = r2["count"] if isinstance(r2, dict) else r2[0]
+
             cur.execute("SELECT MAX(COALESCE(posted_at, fetched_at)) FROM listings")
-            newest_date = cur.fetchone()[0]
+            r3 = cur.fetchone()
+            newest_date = r3["max"] if isinstance(r3, dict) and "max" in r3 else (r3[0] if r3 else None)
 
         unscored = total - scored
+        conn.close()
         return {
             "total_listings": total,
             "scored_listings": scored,
             "unscored_listings": unscored,
             "newest_listing_date": newest_date,
         }
-    except sqlite3.OperationalError:
+    except Exception:
         return {
             "total_listings": 0,
             "scored_listings": 0,
             "unscored_listings": 0,
             "newest_listing_date": None,
         }
-    finally:
-        conn.close()
 
 
 def get_skill_demand(
@@ -1178,17 +1208,7 @@ def get_skill_demand(
     aliases: dict[str, str] | None = None,
     verifier_time: str | None = None,
 ) -> dict[str, Any]:
-    """Compute demand for a skill (required vs nice_to_have frequency).
-
-    Args:
-        db_path: Path to the SQLite database file.
-        skill: Skill name to check.
-        aliases: Skill aliases mapping.
-        verifier_time: Timestamp of last passing verifier cycle (Rule 46).
-
-    Returns:
-        dict with skill, required_count, nice_to_have_count, total_mentions, pct_of_listings.
-    """
+    """Compute demand for a skill (required vs nice_to_have frequency)."""
     from edgedash import skills
 
     target_canonical = skills.canonical(skill, aliases or {})
@@ -1202,9 +1222,10 @@ def get_skill_demand(
             "pct_of_listings": 0.0,
         }
 
-    conn = _connect(db_path)
-    cur = conn.cursor()
     try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
+
         if verifier_time:
             cur.execute(
                 """
@@ -1213,37 +1234,43 @@ def get_skill_demand(
                 """,
                 (verifier_time,),
             )
-            import hashlib
             hashes = set()
             for row in cur.fetchall():
-                if row[0]:
-                    h = hashlib.sha256(row[0].encode("utf-8")).hexdigest()[:16]
+                val = row["description"] if isinstance(row, dict) else row[0]
+                if val:
+                    h = sha256(val.encode("utf-8")).hexdigest()[:16]
                     hashes.add(h)
 
             cur.execute("SELECT description_hash, extraction FROM extraction_cache")
             extractions = []
             for row in cur.fetchall():
-                if row[0] in hashes:
+                d_hash = row["description_hash"] if isinstance(row, dict) else row[0]
+                ext_str = row["extraction"] if isinstance(row, dict) else row[1]
+                if d_hash in hashes:
                     try:
-                        extractions.append(json.loads(row[1]))
+                        extractions.append(json.loads(ext_str))
                     except Exception:
                         pass
 
             if not extractions and not hashes:
                 cur.execute("SELECT extraction FROM extraction_cache")
                 for row in cur.fetchall():
+                    ext_str = row["extraction"] if isinstance(row, dict) else row[0]
                     try:
-                        extractions.append(json.loads(row[0]))
+                        extractions.append(json.loads(ext_str))
                     except Exception:
                         pass
         else:
             cur.execute("SELECT extraction FROM extraction_cache")
             extractions = []
             for row in cur.fetchall():
+                ext_str = row["extraction"] if isinstance(row, dict) else row[0]
                 try:
-                    extractions.append(json.loads(row[0]))
+                    extractions.append(json.loads(ext_str))
                 except Exception:
                     pass
+
+        conn.close()
 
         required_count = 0
         nice_to_have_count = 0
@@ -1269,7 +1296,7 @@ def get_skill_demand(
             "total_listings": total_listings,
             "pct_of_listings": pct,
         }
-    except sqlite3.OperationalError:
+    except Exception:
         return {
             "skill": target_canonical,
             "required_count": 0,
@@ -1278,13 +1305,7 @@ def get_skill_demand(
             "total_listings": 0,
             "pct_of_listings": 0.0,
         }
-    finally:
-        conn.close()
 
-
-# ---------------------------------------------------------------------------
-# Query Pipeline Logging (Rules 42, 45)
-# ---------------------------------------------------------------------------
 
 def log_query(
     db_path: str | Path,
@@ -1295,55 +1316,46 @@ def log_query(
     duration_ms: float,
     answer_text: str = "",
 ) -> int:
-    """Log a user question and pipeline execution to query_log table.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        question: The natural language question asked.
-        tool_chosen: Name of tool executed, or None if unanswerable.
-        params: Parameters passed to the tool.
-        answerable: True if answered by a tool, False if no tool matched.
-        duration_ms: Total pipeline duration in milliseconds.
-        answer_text: Phrased answer text.
-
-    Returns:
-        The row ID of the inserted log record.
-    """
-    conn = _connect(db_path)
-    cur = conn.cursor()
-    now = datetime.now(timezone.utc).isoformat()
-    params_str = params if isinstance(params, str) else json.dumps(params)
+    """Log a user question and pipeline execution to query_log table."""
     try:
-        cur.execute(
-            """
-            INSERT INTO query_log (question, tool_chosen, params, answerable, duration_ms, created_at, answer_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (question, tool_chosen, params_str, 1 if answerable else 0, duration_ms, now, answer_text),
-        )
-        row_id = cur.lastrowid
+        conn = _connect(db_path)
+        cur = conn.cursor()
+        now = datetime.now(timezone.utc).isoformat()
+        params_str = params if isinstance(params, str) else json.dumps(params)
+
+        if conn.is_postgres:
+            cur.execute(
+                """
+                INSERT INTO query_log (question, tool_chosen, params, answerable, duration_ms, created_at, answer_text)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (question, tool_chosen, params_str, 1 if answerable else 0, duration_ms, now, answer_text),
+            )
+            r = cur.fetchone()
+            row_id = r["id"] if isinstance(r, dict) else r[0]
+        else:
+            cur.execute(
+                """
+                INSERT INTO query_log (question, tool_chosen, params, answerable, duration_ms, created_at, answer_text)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (question, tool_chosen, params_str, 1 if answerable else 0, duration_ms, now, answer_text),
+            )
+            row_id = cur.lastrowid
+
         conn.commit()
-        return row_id
-    except sqlite3.OperationalError:
-        return 0
-    finally:
         conn.close()
+        return row_id or 0
+    except Exception:
+        return 0
 
 
 def get_recent_queries(db_path: str | Path, limit: int = 10) -> list[dict[str, Any]]:
-    """Retrieve recent queries from query_log.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        limit: Number of records to return.
-
-    Returns:
-        List of dicts representing recent query records.
-    """
-    conn = _connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
+    """Retrieve recent queries from query_log."""
     try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
         cur.execute(
             """
             SELECT id, question, tool_chosen, params, answerable, duration_ms, created_at, answer_text
@@ -1353,11 +1365,79 @@ def get_recent_queries(db_path: str | Path, limit: int = 10) -> list[dict[str, A
             """,
             (limit,),
         )
-        return [dict(row) for row in cur.fetchall()]
-    except sqlite3.OperationalError:
-        return []
-    finally:
+        rows = cur.fetchall()
         conn.close()
+        return [dict(row) for row in rows]
+    except Exception:
+        return []
 
 
+# ---------------------------------------------------------------------------
+# Migration & Check CLI Utilities
+# ---------------------------------------------------------------------------
 
+def migrate_db(db_path: str | Path = "edgedash.db") -> None:
+    """Create every table on an empty database. Safe to run repeatedly."""
+    backend_name = "PostgreSQL" if get_database_url() else "SQLite"
+    print(f"Running migration on active backend: {backend_name}...")
+    init_db(db_path)
+    print("[OK] Database migration completed successfully. All tables verified.")
+
+
+def check_db(db_path: str | Path = "edgedash.db") -> None:
+    """Print backend information, connectivity status, and table row counts."""
+    db_url = get_database_url()
+    backend_name = "PostgreSQL" if db_url else "SQLite"
+    print(f"Active backend: {backend_name}")
+
+    if db_url:
+        # Mask sensitive password in URL
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(db_url)
+            netloc = parsed.hostname or "localhost"
+            if parsed.port:
+                netloc += f":{parsed.port}"
+            masked_url = f"{parsed.scheme}://{parsed.username or 'user'}:****@{netloc}{parsed.path}"
+            print(f"Connection URI: {masked_url}")
+        except Exception:
+            print("Connection URI: [Configured via DATABASE_URL]")
+    else:
+        print(f"SQLite DB Path: {Path(db_path).resolve()}")
+
+    try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
+        print("Connection status: Connected successfully [OK]")
+
+        tables = ["listings", "skill_gaps", "cycle_log", "extraction_cache", "query_log"]
+        print("\nRow counts per table:")
+        for tbl in tables:
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM {tbl}")
+                r = cur.fetchone()
+                cnt = r["count"] if isinstance(r, dict) else r[0]
+                print(f"  - {tbl:20s}: {cnt} rows")
+            except Exception as e:
+                print(f"  - {tbl:20s}: [Table not found or error: {e}]")
+        conn.close()
+    except Exception as exc:
+        print(f"Connection status: FAILED to connect: {exc}")
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="EdgeDash Database Management CLI")
+    parser.add_argument("--migrate", action="store_true", help="Create tables on the active database")
+    parser.add_argument("--check", action="store_true", help="Check database connectivity and row counts")
+    parser.add_argument("--db-path", default="edgedash.db", help="Path to SQLite database file if offline")
+
+    args = parser.parse_args()
+
+    if args.migrate:
+        migrate_db(args.db_path)
+    elif args.check:
+        check_db(args.db_path)
+    else:
+        parser.print_help()
