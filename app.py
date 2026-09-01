@@ -209,11 +209,88 @@ with m_col4:
 st.markdown("---")
 
 # Dynamic Tabs
-tab_listings, tab_gaps, tab_activity = st.tabs([
+tab_ask, tab_listings, tab_gaps, tab_activity = st.tabs([
+    "💬 Ask Your Data",
     "🔥 Scored Job Matches", 
     "⚠️ Skill Gaps Analysis",
-    "🕵️ Agent Activity Log"
+    "🕵️ Agent Activity Log",
 ])
+
+# ---------------------------------------------------------------------------
+# TAB 0: ASK YOUR DATA (Two-call pipeline query interface per Rules 42-45)
+# ---------------------------------------------------------------------------
+with tab_ask:
+    st.header("💬 Ask Your Career Data")
+    st.markdown(
+        "Ask questions about hiring trends, match quality, skill gaps, and market demand. "
+        "Answers are generated strictly from verified database records (Rules 42–45)."
+    )
+
+    # 3 Example Question Buttons (Requirement 6)
+    st.markdown("##### 💡 Suggested Questions")
+    b_col1, b_col2, b_col3 = st.columns(3)
+
+    ex1 = "Which companies are hiring recently?"
+    ex2 = "What are my top skill gaps?"
+    ex3 = "How in-demand is Python?"
+
+    if "current_question" not in st.session_state:
+        st.session_state["current_question"] = ""
+
+    with b_col1:
+        if st.button("🏢 Companies Hiring", use_container_width=True):
+            st.session_state["current_question"] = ex1
+    with b_col2:
+        if st.button("⚠️ Top Skill Gaps", use_container_width=True):
+            st.session_state["current_question"] = ex2
+    with b_col3:
+        if st.button("📊 Python Demand", use_container_width=True):
+            st.session_state["current_question"] = ex3
+
+    # Input form for natural language questions
+    with st.form("ask_data_form", clear_on_submit=False):
+        user_input = st.text_input(
+            "Enter your question:",
+            value=st.session_state.get("current_question", ""),
+            placeholder="e.g. Which companies posted jobs in the last 7 days? or What are my top skill gaps?",
+        )
+        submitted = st.form_submit_button("🔍 Ask Pipeline", use_container_width=True)
+
+    active_q = user_input if submitted else st.session_state.get("current_question", "")
+
+    if active_q:
+        with st.spinner("Analyzing verified career data…"):
+            try:
+                from edgedash.query import ask
+                answer = ask(active_q, config=config, db_path=db_path)
+
+                badge_color = "#3b82f6" if answer.tool_used else "#ef4444"
+                badge_text = f"Tool: {answer.tool_used}" if answer.tool_used else "Unanswerable with current tools"
+
+                st.markdown(
+                    f"""
+                    <div style="background-color: #111827; border: 1px solid #1f2937; border-left: 4px solid {badge_color}; border-radius: 12px; padding: 20px; margin: 20px 0; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                            <span style="font-weight: 700; color: #93c5fd; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.05em;">AI Synthesis</span>
+                            <span style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; padding: 3px 10px; border-radius: 20px; font-size: 0.8em; font-weight: 600; border: 1px solid rgba(59, 130, 246, 0.3);">{badge_text}</span>
+                        </div>
+                        <div style="font-size: 1.05em; color: #f8fafc; line-height: 1.6; white-space: pre-wrap;">{answer.text}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                # Render data rows underneath in a table per Rule 44
+                if answer.rows:
+                    st.markdown("##### 📋 Retrieved Data Rows (Rule 44)")
+                    import pandas as pd
+                    df = pd.DataFrame(answer.rows)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                elif answer.tool_used:
+                    st.info("No matching rows found in the database for the given filters.")
+            except Exception as exc:
+                st.error(f"Error executing query: {exc}")
+
 
 # ---------------------------------------------------------------------------
 # TAB 1: SCORED JOB MATCHES (Premium HTML Cards with sliders/search)
