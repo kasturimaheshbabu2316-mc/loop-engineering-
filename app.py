@@ -2,7 +2,7 @@
 
 A premium, modern LinkedIn-inspired professional dashboard for career intelligence,
 job match evaluation, skill gap analytics, and continuous verification telemetry.
-Strictly read-only.
+Strictly read-only data operations with interactive user profile customization.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import streamlit as st
 
-from edgedash.config import load_config
+from edgedash.config import load_config, save_config, Config
 from edgedash.env import load_env
 from edgedash import storage
 
@@ -69,7 +69,7 @@ st.markdown(
         border: 1px solid #334155;
         border-radius: 16px;
         padding: 14px 24px;
-        margin-bottom: 20px;
+        margin-bottom: 18px;
         box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
     }
     .linkedin-logo {
@@ -104,7 +104,7 @@ st.markdown(
         margin: 0;
     }
 
-    /* Profile / Candidate Banner */
+    /* Profile / Candidate Banner Card */
     .candidate-card {
         background: #111827;
         border: 1px solid #1f2937;
@@ -133,18 +133,19 @@ st.markdown(
         gap: 18px;
     }
     .candidate-avatar {
-        width: 56px;
-        height: 56px;
+        width: 54px;
+        height: 54px;
         border-radius: 50%;
         background: linear-gradient(135deg, #0a66c2 0%, #0284c7 100%);
         color: #ffffff;
         font-weight: 800;
-        font-size: 1.3em;
+        font-size: 1.25em;
         display: flex;
         align-items: center;
         justify-content: center;
         border: 2px solid #38bdf8;
         box-shadow: 0 4px 12px rgba(10, 102, 194, 0.35);
+        flex-shrink: 0;
     }
 
     /* Metric Cards */
@@ -326,12 +327,12 @@ if not os.path.exists(db_path):
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Sidebar Navigation & Profile Settings
+# Sidebar: Profile Settings & Interactive Customization Form
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.markdown(
         """
-        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
             <div style="background:#0a66c2; color:white; font-weight:800; font-size:1.1em; width:32px; height:32px; border-radius:6px; display:flex; align-items:center; justify-content:center;">in</div>
             <div>
                 <div style="font-weight:700; color:#f8fafc; font-size:1.05em;">EdgeDash Career</div>
@@ -343,11 +344,61 @@ with st.sidebar:
     )
     
     if st.button("🔄 Force Reload Data", type="primary", use_container_width=True):
+        st.cache_resource.clear()
         st.cache_data.clear()
         st.rerun()
 
     st.markdown("---")
     st.markdown("##### 👤 Target Candidate Profile")
+
+    # Interactive Profile Customizer Expander
+    with st.expander("⚙️ Customize Profile Settings", expanded=False):
+        with st.form("custom_profile_form"):
+            new_role = st.text_input("🎯 Target Role:", value=config.target_role)
+            new_city = st.text_input("📍 Location / City:", value=config.target_city)
+            new_exp = st.number_input("⏳ Experience (Years):", min_value=0, max_value=30, value=int(config.experience_years), step=1)
+            
+            # Available LLM models list
+            model_options = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-2.5-flash", "ollama"]
+            current_model_idx = model_options.index(config.llm_model) if config.llm_model in model_options else 0
+            new_model = st.selectbox("⚡ LLM Model:", options=model_options, index=current_model_idx)
+            
+            new_threshold = st.slider("🛡️ Fit Threshold (%):", min_value=0, max_value=100, value=int(config.min_fit_score), step=5)
+            
+            skills_str = ", ".join(config.my_skills)
+            new_skills_raw = st.text_area("🔑 Core Skills (comma-separated):", value=skills_str, height=90)
+            
+            save_submitted = st.form_submit_button("💾 Save Profile Settings", use_container_width=True)
+
+            if save_submitted:
+                parsed_skills = [s.strip().lower() for s in new_skills_raw.split(",") if s.strip()]
+                updated_config = Config(
+                    target_role=new_role.strip() or config.target_role,
+                    target_city=new_city.strip() or config.target_city,
+                    keywords=config.keywords,
+                    my_skills=parsed_skills or config.my_skills,
+                    experience_years=int(new_exp),
+                    db_path=config.db_path,
+                    min_fit_score=int(new_threshold),
+                    sources=config.sources,
+                    use_mock_fetcher=config.use_mock_fetcher,
+                    llm_provider="ollama" if new_model == "ollama" else "gemini",
+                    llm_model=new_model,
+                    skill_aliases=config.skill_aliases,
+                    min_score_spread=config.min_score_spread,
+                    min_score_stdev=config.min_score_stdev,
+                    max_empty_extraction_pct=config.max_empty_extraction_pct,
+                    max_skills_per_listing=config.max_skills_per_listing,
+                    min_gap_sample=config.min_gap_sample,
+                    max_data_age_days=config.max_data_age_days,
+                )
+                save_config(updated_config)
+                st.cache_resource.clear()
+                st.cache_data.clear()
+                st.success("✅ Profile settings saved to config.yaml!")
+                st.rerun()
+
+    # Profile Quick Summary Display
     st.write(f"🎯 **Role:** `{config.target_role}`")
     st.write(f"📍 **Location:** `{config.target_city}`")
     st.write(f"⏳ **Experience:** `{config.experience_years} Years`")
@@ -418,6 +469,38 @@ st.markdown(
             <span style="background: rgba(16, 185, 129, 0.15); color: #34d399; padding: 5px 12px; border-radius: 20px; font-size: 0.8em; font-weight: 600; border: 1px solid rgba(16, 185, 129, 0.3);">
                 ● Live Intelligence Active
             </span>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Role initials avatar
+role_initials = "".join([w[0].upper() for w in config.target_role.split()[:2]]) if config.target_role else "CA"
+
+# Candidate Profile Banner Card
+candidate_skills_preview = " ".join([f'<span style="background: rgba(56, 189, 248, 0.1); color: #38bdf8; padding: 3px 10px; border-radius: 12px; font-size: 0.8em; border: 1px solid rgba(56, 189, 248, 0.25);">{html.escape(s)}</span>' for s in config.my_skills[:6]])
+
+st.markdown(
+    f"""
+    <div class="candidate-card">
+        <div class="candidate-info">
+            <div class="candidate-avatar">{html.escape(role_initials)}</div>
+            <div>
+                <div style="font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 1.25em; color: #f8fafc;">
+                    {html.escape(config.target_role)} Profile
+                </div>
+                <div style="color: #94a3b8; font-size: 0.9em; margin-top: 2px;">
+                    📍 {html.escape(config.target_city)} &nbsp;•&nbsp; ⏳ {config.experience_years} Years Experience &nbsp;•&nbsp; ⚡ Model: <code style="color: #38bdf8;">{html.escape(config.llm_model)}</code>
+                </div>
+                <div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
+                    {candidate_skills_preview}
+                </div>
+            </div>
+        </div>
+        <div style="text-align: right;">
+            <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em;">Match Threshold</div>
+            <div style="font-size: 1.6em; font-weight: 800; color: #34d399; font-family: 'Outfit', sans-serif;">{config.min_fit_score}%</div>
         </div>
     </div>
     """,

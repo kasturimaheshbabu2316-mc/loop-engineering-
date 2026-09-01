@@ -116,3 +116,42 @@ def load_config(path: str | Path | None = None) -> Config:
         min_gap_sample=int(raw.get("min_gap_sample", 3)),
         max_data_age_days=int(raw.get("max_data_age_days", 3)),
     )
+
+
+def save_config(config: Config, path: str | Path | None = None) -> None:
+    """Save user configuration back to YAML file.
+
+    Args:
+        config: Config object to persist.
+        path: Path to config.yaml. Defaults to "config.yaml".
+    """
+    if path is None:
+        path = Path("config.yaml")
+    else:
+        path = Path(path)
+
+    raw: dict[str, Any] = {}
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+        except Exception:
+            raw = {}
+
+    raw["target_role"] = config.target_role
+    raw["target_city"] = config.target_city
+    raw["keywords"] = config.keywords
+    raw["my_skills"] = config.my_skills
+    raw["experience_years"] = config.experience_years
+    raw["db_path"] = config.db_path
+    raw["min_fit_score"] = config.min_fit_score
+    raw["sources"] = config.sources
+    raw["use_mock_fetcher"] = config.use_mock_fetcher
+    raw["llm_provider"] = config.llm_provider
+    raw["llm_model"] = config.llm_model
+    if config.skill_aliases:
+        raw["skill_aliases"] = config.skill_aliases
+
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(raw, f, sort_keys=False, default_flow_style=False)
+
