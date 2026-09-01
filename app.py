@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import html
 import os
 from pathlib import Path
+import textwrap
 import streamlit as st
 
 from edgedash.config import load_config, save_config, Config
@@ -18,6 +19,10 @@ from edgedash.env import load_env
 from edgedash import storage
 
 load_env()
+
+# Helper to render clean HTML in Streamlit without indentation artifacts
+def render_html(html_code: str) -> None:
+    st.markdown(textwrap.dedent(html_code).strip(), unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Page Configuration & Global Branding
@@ -44,38 +49,37 @@ if "config_loaded" not in st.session_state:
     st.session_state["config_loaded"] = True
 
 # Active runtime configuration built from session state
+disk_cfg = load_config("config.yaml")
 config = Config(
     target_role=st.session_state["target_role"],
     target_city=st.session_state["target_city"],
-    keywords=load_config("config.yaml").keywords,
+    keywords=disk_cfg.keywords,
     my_skills=st.session_state["my_skills"],
     experience_years=int(st.session_state["experience_years"]),
-    db_path=load_config("config.yaml").db_path,
+    db_path=disk_cfg.db_path,
     min_fit_score=int(st.session_state["min_fit_score"]),
-    sources=load_config("config.yaml").sources,
-    use_mock_fetcher=load_config("config.yaml").use_mock_fetcher,
+    sources=disk_cfg.sources,
+    use_mock_fetcher=disk_cfg.use_mock_fetcher,
     llm_provider=st.session_state.get("llm_provider", "gemini"),
     llm_model=st.session_state.get("llm_model", "gemini-3.5-flash-lite"),
-    skill_aliases=load_config("config.yaml").skill_aliases,
+    skill_aliases=disk_cfg.skill_aliases,
 )
 db_path = config.db_path
 
 # ---------------------------------------------------------------------------
 # Professional Modern CSS Design System
 # ---------------------------------------------------------------------------
-st.markdown(
+render_html(
     """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap');
 
-    /* Global Theme Overrides */
     .stApp {
         background-color: #0b0f19;
         color: #e2e8f0;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
 
-    /* Headings */
     h1, h2, h3, h4, h5, h6 {
         font-family: 'Outfit', 'Inter', sans-serif !important;
         font-weight: 700 !important;
@@ -83,7 +87,6 @@ st.markdown(
         letter-spacing: -0.02em;
     }
 
-    /* Top Navigation Banner */
     .navbar-container {
         display: flex;
         align-items: center;
@@ -128,7 +131,6 @@ st.markdown(
         margin: 0;
     }
 
-    /* Candidate Profile Banner Card */
     .candidate-card {
         background: #111827;
         border: 1px solid #1f2937;
@@ -172,7 +174,6 @@ st.markdown(
         flex-shrink: 0;
     }
 
-    /* Metric Cards */
     div[data-testid="metric-container"] {
         background-color: #111827;
         border: 1px solid #1f2937;
@@ -200,7 +201,6 @@ st.markdown(
         font-family: 'Outfit', sans-serif !important;
     }
 
-    /* Tab Customizations */
     div[data-baseweb="tab-list"] {
         gap: 8px;
         background-color: #0f172a;
@@ -224,7 +224,6 @@ st.markdown(
         box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4) !important;
     }
 
-    /* Job Match Card */
     .job-post-card {
         background: #111827;
         border: 1px solid #1e293b;
@@ -291,13 +290,11 @@ st.markdown(
         box-shadow: 0 4px 12px rgba(37, 99, 235, 0.5);
     }
 
-    /* Sidebar Styling */
     div[data-testid="stSidebar"] {
         background-color: #0a0e1a;
         border-right: 1px solid #1e293b;
     }
 
-    /* Custom scrollbar */
     ::-webkit-scrollbar {
         width: 8px;
         height: 8px;
@@ -313,8 +310,7 @@ st.markdown(
         background: #334155;
     }
     </style>
-    """,
-    unsafe_allow_html=True,
+    """
 )
 
 # ---------------------------------------------------------------------------
@@ -354,7 +350,7 @@ if not os.path.exists(db_path):
 # Sidebar: Profile Settings & Interactive Customization Form
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown(
+    render_html(
         """
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
             <div style="background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; font-weight: 800; font-size: 1.05em; width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4);">ED</div>
@@ -363,20 +359,19 @@ with st.sidebar:
                 <div style="font-size: 0.75em; color: #94a3b8;">Career Intelligence Engine</div>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
     
-    # Force Reload Data (Fixed & Reliable)
+    # Force Reload Data
     if st.button("🔄 Force Reload Data", type="primary", use_container_width=True):
         st.cache_data.clear()
-        cfg = load_config("config.yaml")
-        st.session_state["target_role"] = cfg.target_role
-        st.session_state["target_city"] = cfg.target_city
-        st.session_state["experience_years"] = cfg.experience_years
-        st.session_state["min_fit_score"] = cfg.min_fit_score
-        st.session_state["my_skills"] = cfg.my_skills
-        st.session_state["llm_model"] = cfg.llm_model
+        reloaded_cfg = load_config("config.yaml")
+        st.session_state["target_role"] = reloaded_cfg.target_role
+        st.session_state["target_city"] = reloaded_cfg.target_city
+        st.session_state["experience_years"] = reloaded_cfg.experience_years
+        st.session_state["min_fit_score"] = reloaded_cfg.min_fit_score
+        st.session_state["my_skills"] = reloaded_cfg.my_skills
+        st.session_state["llm_model"] = reloaded_cfg.llm_model
         st.success("Refreshed all data & configuration from disk.")
         st.rerun()
 
@@ -433,7 +428,7 @@ with st.sidebar:
                 st.success("✅ Profile updated and saved to config.yaml!")
                 st.rerun()
 
-    # Profile Quick Summary Display (Without LLM Model per user request)
+    # Profile Quick Summary Display
     st.write(f"🎯 **Role:** `{st.session_state['target_role']}`")
     st.write(f"📍 **Location:** `{st.session_state['target_city']}`")
     st.write(f"⏳ **Experience:** `{st.session_state['experience_years']} Years`")
@@ -442,7 +437,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("##### 🔑 My Core Skills")
     skills_html = " ".join([f'<span style="background: #1e293b; color: #38bdf8; padding: 2px 8px; border-radius: 12px; font-size: 0.75em; display: inline-block; margin: 2px; border: 1px solid #334155;">{html.escape(s)}</span>' for s in st.session_state['my_skills'][:12]])
-    st.markdown(skills_html, unsafe_allow_html=True)
+    render_html(f"<div>{skills_html}</div>")
 
 # Fetch data snapshots
 total_listings, total_scored = fetch_counts(db_path)
@@ -489,8 +484,8 @@ else:
 # ---------------------------------------------------------------------------
 # Top Header & Candidate Profile Card
 # ---------------------------------------------------------------------------
-st.markdown(
-    f"""
+render_html(
+    """
     <div class="navbar-container">
         <div class="brand-logo">
             <div class="brand-badge">ED</div>
@@ -505,17 +500,16 @@ st.markdown(
             </span>
         </div>
     </div>
-    """,
-    unsafe_allow_html=True,
+    """
 )
 
 # Role initials avatar
 role_initials = "".join([w[0].upper() for w in st.session_state['target_role'].split()[:2]]) if st.session_state['target_role'] else "CA"
 
-# Candidate Profile Banner Card (Without LLM Model per user request)
+# Candidate Profile Banner Card
 candidate_skills_preview = " ".join([f'<span style="background: rgba(56, 189, 248, 0.1); color: #38bdf8; padding: 3px 10px; border-radius: 12px; font-size: 0.8em; border: 1px solid rgba(56, 189, 248, 0.25);">{html.escape(s)}</span>' for s in st.session_state['my_skills'][:6]])
 
-st.markdown(
+render_html(
     f"""
     <div class="candidate-card">
         <div class="candidate-info">
@@ -537,8 +531,7 @@ st.markdown(
             <div style="font-size: 1.6em; font-weight: 800; color: #34d399; font-family: 'Outfit', sans-serif;">{st.session_state['min_fit_score']}%</div>
         </div>
     </div>
-    """,
-    unsafe_allow_html=True,
+    """
 )
 
 # Warning banner if newest cycle failed (Constraint 1)
@@ -581,7 +574,7 @@ tab_ask, tab_listings, tab_gaps, tab_activity = st.tabs([
 # TAB 0: AI CAREER COPILOT (Two-Call Pipeline per Rules 42-45)
 # ---------------------------------------------------------------------------
 with tab_ask:
-    st.markdown(
+    render_html(
         """
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
             <div style="background: rgba(37, 99, 235, 0.15); color: #38bdf8; border-radius: 8px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-size: 1.1em;">✨</div>
@@ -591,8 +584,7 @@ with tab_ask:
             Inquire directly about recent company hiring volumes, top candidate fit scores, skill demand, and market blockers.
             All responses are synthesized exclusively from verified database records with zero extrapolation (Rules 42–45).
         </p>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
     # 3 Example Question Prompt Chips
@@ -637,7 +629,7 @@ with tab_ask:
                 badge_bg = "rgba(37, 99, 235, 0.2)" if answer.tool_used else "rgba(239, 68, 68, 0.15)"
                 badge_text = f"Tool: {answer.tool_used}" if answer.tool_used else "Unanswerable with available tools"
 
-                st.markdown(
+                render_html(
                     f"""
                     <div style="background-color: #111827; border: 1px solid #1f2937; border-left: 4px solid {badge_color}; border-radius: 14px; padding: 22px; margin: 18px 0; box-shadow: 0 10px 25px -3px rgba(0, 0, 0, 0.35);">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
@@ -649,8 +641,7 @@ with tab_ask:
                         </div>
                         <div style="font-size: 1.02em; color: #e2e8f0; line-height: 1.65; white-space: pre-wrap;">{html.escape(answer.text)}</div>
                     </div>
-                    """,
-                    unsafe_allow_html=True,
+                    """
                 )
 
                 # Render data rows underneath in a table per Rule 44
@@ -668,7 +659,7 @@ with tab_ask:
 # TAB 1: SCORED JOB MATCHES (Customized Filter & Search)
 # ---------------------------------------------------------------------------
 with tab_listings:
-    st.markdown(
+    render_html(
         f"""
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
             <div>
@@ -676,8 +667,7 @@ with tab_listings:
                 <p style="color: #94a3b8; font-size: 0.9em; margin: 0;">Ranked for <strong>{html.escape(st.session_state['target_role'])}</strong> in <strong>{html.escape(st.session_state['target_city'])}</strong> ({st.session_state['experience_years']} yrs exp).</p>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
     verified_time = last_pass_time
@@ -728,11 +718,10 @@ with tab_listings:
                     if match_search:
                         filtered_listings.append(l)
 
-        st.markdown(
+        render_html(
             f"<div style='color:#94a3b8; font-size:0.9em; margin-bottom:14px;'>"
             f"Showing <strong>{len(filtered_listings)}</strong> matching listings (minimum score: <strong>{min_score_filter}%</strong>) from {len(raw_listings)} verified records."
-            f"</div>",
-            unsafe_allow_html=True,
+            f"</div>"
         )
 
         if not filtered_listings:
@@ -768,7 +757,7 @@ with tab_listings:
                     badge_border = "rgba(239, 68, 68, 0.4)"
                     fit_label = "⚠️ Moderate Fit"
 
-                st.markdown(
+                render_html(
                     f"""
                     <div class="job-post-card">
                         <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px;">
@@ -787,11 +776,9 @@ with tab_listings:
                                 </span>
                             </div>
                         </div>
-                        
                         <div class="insight-quote-box">
                             <strong style="color: #38bdf8;">💡 Why you're a fit:</strong> {html.escape(reason)}
                         </div>
-                        
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; padding-top: 10px; border-top: 1px solid #1e293b;">
                             <span style="font-size: 0.82em; color: #64748b;">Ingested & Scored by EdgeDash Intelligence Engine</span>
                             <a href="{html.escape(url)}" target="_blank" class="apply-btn">
@@ -799,8 +786,7 @@ with tab_listings:
                             </a>
                         </div>
                     </div>
-                    """,
-                    unsafe_allow_html=True,
+                    """
                 )
                 with st.expander(f"📄 View complete description for {title}"):
                     st.write(desc)
@@ -809,14 +795,13 @@ with tab_listings:
 # TAB 2: SKILL GAPS ANALYSIS
 # ---------------------------------------------------------------------------
 with tab_gaps:
-    st.markdown(
+    render_html(
         """
         <div style="margin-bottom: 14px;">
             <h3 style="margin: 0; font-size: 1.3em;">⚠️ High-Impact Skill Gaps</h3>
             <p style="color: #94a3b8; font-size: 0.9em; margin: 0;">Targeted skills to learn ranked by blocked job listings and opportunity costs in your market.</p>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
     raw_gaps = fetch_verified_gaps(db_path, verified_time)
@@ -846,7 +831,7 @@ with tab_gaps:
 
                 pct = int((blocked / max_blocked) * 100.0)
 
-                st.markdown(
+                render_html(
                     f"""
                     <div style="background: #111827; padding: 18px 22px; border-radius: 14px; border: 1px solid #1e293b; margin-bottom: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.2);">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
@@ -866,22 +851,20 @@ with tab_gaps:
                             <span>🎯 Average Match Score: <strong style="color: #f8fafc;">{mean_score:.1f}%</strong> &nbsp;•&nbsp; Peak Score: <strong style="color: #34d399;">{top_score}%</strong></span>
                         </div>
                     </div>
-                    """,
-                    unsafe_allow_html=True,
+                    """
                 )
 
 # ---------------------------------------------------------------------------
 # TAB 3: PIPELINE ACTIVITY LOG (Enterprise Telemetry Table)
 # ---------------------------------------------------------------------------
 with tab_activity:
-    st.markdown(
+    render_html(
         """
         <div style="margin-bottom: 14px;">
             <h3 style="margin: 0; font-size: 1.3em;">🕵️ Enterprise Pipeline Telemetry</h3>
             <p style="color: #94a3b8; font-size: 0.9em; margin: 0;">Audit trail of autonomous orchestrator runs, agent verifications, and execution metrics.</p>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
     log_rows = []
@@ -940,7 +923,6 @@ with tab_activity:
             "Duration": duration_str,
         })
 
-    # Render styled HTML table for activity log
     table_rows_html = ""
     for r in log_rows:
         table_rows_html += f"""
@@ -954,7 +936,7 @@ with tab_activity:
         </tr>
         """
 
-    st.markdown(
+    render_html(
         f"""
         <div style="overflow-x: auto; border: 1px solid #1e293b; border-radius: 14px; background-color: #111827; box-shadow: 0 10px 25px -3px rgba(0, 0, 0, 0.3); margin-top: 10px;">
             <table style="width: 100%; border-collapse: collapse; text-align: left; font-family: 'Inter', sans-serif;">
@@ -973,6 +955,5 @@ with tab_activity:
                 </tbody>
             </table>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
