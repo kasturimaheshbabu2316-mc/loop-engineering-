@@ -16,7 +16,7 @@ Apply these rules to every interaction in this project without exception.
 
 ## Architecture
 
-```
+```text
 Trigger (scheduled)
   -> Orchestrator
        -> Fetcher       (sub-agent)
