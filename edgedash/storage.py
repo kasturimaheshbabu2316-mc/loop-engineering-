@@ -600,6 +600,80 @@ def upsert_extraction_cache(
     conn.close()
 
 
+def ping_db(db_path: str | Path) -> tuple[bool, str]:
+    """Test connectivity to the database backend. Safe and read-only."""
+    try:
+        if not get_database_url() and not Path(db_path).exists():
+            return False, f"Database file not found: '{db_path}'"
+        conn = _connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        is_pg = conn.is_postgres
+        conn.close()
+        backend_name = "PostgreSQL" if is_pg else f"SQLite ({Path(db_path).name})"
+        return True, backend_name
+    except Exception as exc:
+        return False, str(exc)
+
+
+def get_newest_listing_time(db_path: str | Path) -> str | None:
+    """Return the timestamp of the newest listing by fetched_at."""
+    try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT MAX(fetched_at) FROM listings")
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return row["max"] if isinstance(row, dict) and "max" in row else (row[0] if row else None)
+        return None
+    except Exception:
+        return None
+
+
+def get_last_successful_cycle_time(db_path: str | Path) -> str | None:
+    """Return the timestamp of the most recent successful cycle in cycle_log."""
+    try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT finished_at FROM cycle_log
+            WHERE (agent = 'Orchestrator' AND status IN ('complete', 'nothing_to_do'))
+               OR (agent = 'Verifier' AND (status = 'ok' OR notes LIKE '%pass%'))
+            ORDER BY id DESC LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return row["finished_at"] if isinstance(row, dict) and "finished_at" in row else (row[0] if row else None)
+        return None
+    except Exception:
+        return None
+
+
+def get_recent_verifier_results(db_path: str | Path, limit: int = 3) -> list[dict[str, Any]]:
+    """Retrieve the most recent Verifier cycle runs from cycle_log."""
+    try:
+        conn = _connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT status, notes, finished_at FROM cycle_log
+            WHERE agent = 'Verifier'
+            ORDER BY id DESC LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
 def get_last_passing_verifier_time(db_path: str | Path) -> str | None:
     """Retrieve the finished_at timestamp of the last passing Verifier cycle."""
     try:

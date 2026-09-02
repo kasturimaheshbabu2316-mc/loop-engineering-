@@ -14,5 +14,9 @@ PyYAML==6.0.2
 # New SDK replacing deprecated google-generativeai package.
 google-genai==1.24.0
 
+# PostgreSQL driver — used in edgedash/storage.py when DATABASE_URL is set
+# Rule 2: Hosted Postgres connection support for production deployments.
+psycopg2-binary==2.9.10
+
 # Streamlit Dashboard (read-only)
 streamlit==1.40.0

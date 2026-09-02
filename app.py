@@ -482,10 +482,40 @@ else:
         newest_verdict = "Verified Pass"
 
 # ---------------------------------------------------------------------------
-# Top Header & Candidate Profile Card
+# Top Header & Health Status Indicator (Rule 50 safe execution)
 # ---------------------------------------------------------------------------
+try:
+    from edgedash.health import get_dashboard_health_summary
+    health_info = get_dashboard_health_summary(db_path)
+except Exception as exc:
+    health_info = {
+        "status": "amber",
+        "label": "Unknown",
+        "description": f"Telemetry unavailable: {exc}",
+    }
+
+status_type = health_info.get("status", "amber")
+status_label = health_info.get("label", "Unknown")
+status_desc = health_info.get("description", "")
+
+if status_type == "green":
+    badge_bg = "rgba(16, 185, 129, 0.15)"
+    badge_color = "#34d399"
+    badge_border = "rgba(16, 185, 129, 0.3)"
+    dot_color = "#10b981"
+elif status_type == "red":
+    badge_bg = "rgba(239, 68, 68, 0.15)"
+    badge_color = "#f87171"
+    badge_border = "rgba(239, 68, 68, 0.3)"
+    dot_color = "#ef4444"
+else:  # amber
+    badge_bg = "rgba(245, 158, 11, 0.15)"
+    badge_color = "#fbbf24"
+    badge_border = "rgba(245, 158, 11, 0.3)"
+    dot_color = "#f59e0b"
+
 render_html(
-    """
+    f"""
     <div class="navbar-container">
         <div class="brand-logo">
             <div class="brand-badge">ED</div>
@@ -495,8 +525,11 @@ render_html(
             </div>
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="background: rgba(16, 185, 129, 0.15); color: #34d399; padding: 5px 12px; border-radius: 20px; font-size: 0.8em; font-weight: 600; border: 1px solid rgba(16, 185, 129, 0.3);">
-                ● Live Telemetry Active
+            <span style="background: {badge_bg}; color: {badge_color}; padding: 6px 14px; border-radius: 20px; font-size: 0.82em; font-weight: 600; border: 1px solid {badge_border}; display: inline-flex; align-items: center; gap: 7px; box-shadow: 0 2px 8px rgba(0,0,0,0.2);">
+                <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: {dot_color};"></span>
+                <span>{html.escape(status_label)}</span>
+                <span style="color: #64748b;">•</span>
+                <span style="font-weight: 400; opacity: 0.95;">{html.escape(status_desc)}</span>
             </span>
         </div>
     </div>
